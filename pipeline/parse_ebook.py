@@ -38,6 +38,62 @@ CHAPTER_PATTERNS = [
 ]
 CHAPTER_RE = re.compile("|".join("(?:%s)" % p for p in CHAPTER_PATTERNS), re.IGNORECASE)
 
+# Tu khoa nhan dien phan MUC LUC (table of contents) - da bo dau, chu thuong.
+TOC_KEYWORDS = (
+    "muc luc",
+    "table of contents",
+    "danh sach chuong",
+    "danh muc chuong",
+    "muc luc chuong",
+)
+
+
+def _strip_accents_lower(s):
+    """Bo dau tieng Viet + ha chu thuong (de so khop tu khoa muc luc)."""
+    nfkd = unicodedata.normalize("NFKD", s or "")
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+
+def looks_like_toc(title, text):
+    """Doan xem mot 'chuong' co thuc chat la MUC LUC hay khong.
+
+    Hai dau hieu:
+      1. Co tu khoa 'Muc Luc' / 'Table of Contents' o tieu de hoac dau noi dung.
+      2. Noi dung chu yeu la MOT DANH SACH cac dong tieu de chuong (dong ngan,
+         phan lon khop mau 'Chuong N: ...'), rat it van xuoi thuc su.
+    """
+    head = (text or "").strip()[:400]
+    hay = _strip_accents_lower((title or "") + "\n" + head)
+    for kw in TOC_KEYWORDS:
+        if kw in hay:
+            return True
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if len(lines) >= 10:
+        heading_lines = sum(1 for ln in lines if CHAPTER_RE.match(ln))
+        ratio = heading_lines / len(lines)
+        avg_len = sum(len(ln) for ln in lines) / len(lines)
+        # Muc luc: nhieu dong tieu de, chiem da so, va cac dong deu ngan.
+        if heading_lines >= 10 and ratio >= 0.6 and avg_len < 90:
+            return True
+    return False
+
+
+def drop_toc_chapters(chapters):
+    """Loai bo cac chuong thuc chat la MUC LUC (thuong nam o dau truyen).
+
+    An toan: neu lo tay loai het (khong con chuong nao) thi giu nguyen ban dau.
+    """
+    kept = []
+    for c in chapters:
+        if looks_like_toc(c.get("title", ""), c.get("text", "")):
+            print(
+                "[info] Bo qua phan Muc Luc: %r" % (c.get("title", "")[:60]),
+                file=sys.stderr,
+            )
+            continue
+        kept.append(c)
+    return kept or chapters
+
 
 def slugify(text, max_len=40):
     """Chuyen tieu de -> slug ascii an toan cho ten file."""
@@ -245,12 +301,15 @@ CALIBRE_EXTS = {".mobi", ".azw3", ".azw", ".fb2", ".html", ".htm", ".rtf", ".lit
 def parse_ebook(path, max_chars=0):
     ext = os.path.splitext(path)[1].lower()
     if ext in PARSERS:
-        return PARSERS[ext](path, max_chars)
-    if ext in CALIBRE_EXTS:
-        return parse_via_calibre(path, max_chars)
-    # Thu doc nhu text thuan neu khong ro dinh dang.
-    print("[warn] Dinh dang la %r, thu doc nhu text" % ext, file=sys.stderr)
-    return parse_txt(path, max_chars)
+        chapters = PARSERS[ext](path, max_chars)
+    elif ext in CALIBRE_EXTS:
+        chapters = parse_via_calibre(path, max_chars)
+    else:
+        # Thu doc nhu text thuan neu khong ro dinh dang.
+        print("[warn] Dinh dang la %r, thu doc nhu text" % ext, file=sys.stderr)
+        chapters = parse_txt(path, max_chars)
+    # Loai bo phan MUC LUC o dau (neu co) truoc khi dem/cat chuong.
+    return drop_toc_chapters(chapters)
 
 
 # ------------------------------------------------------------------ main
