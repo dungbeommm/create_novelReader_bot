@@ -1,8 +1,14 @@
 {
-  "offset": 195557034,
+  "offset": 195557035,
   "sessions": {
     "6412935043": {
-      "step": "await_file"
+      "step": "await_title",
+      "filename": "chuong1.txt",
+      "input_path": "bot/state/uploads/6412935043/chuong1.txt",
+      "title": "chuong1",
+      "length_scale": "1.0",
+      "format": "mp3",
+      "install_calibre": "false"
     }
   }
 }
