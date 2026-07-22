@@ -1,0 +1,19 @@
+{
+  "offset": 195557065,
+  "sessions": {
+    "6412935043": {
+      "step": "ready",
+      "filename": "--Tạo Hóa Chi Vương full.epub",
+      "input_path": "bot/state/uploads/6412935043/--Tạo Hóa Chi Vương full.epub",
+      "title": "Tạo Hóa Chi Vương",
+      "length_scale": "1.0",
+      "format": "wav",
+      "install_calibre": "false",
+      "start": "1",
+      "limit": "1000",
+      "batch_size": "0",
+      "chapters_total": 4100,
+      "chat_id": 6412935043
+    }
+  }
+}
