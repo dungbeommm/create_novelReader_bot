@@ -93,15 +93,7 @@ def gh_dispatch_workflow(job_id, opts):
         "ref": GH_BRANCH,
         "inputs": {
             "job_id": job_id,
-            "title": str(opts.get("title", "")),
-            "format": str(opts.get("format", "mp3")),
-            "length_scale": str(opts.get("length_scale", "1.0")),
-            "package": str(opts.get("package", "auto")),
-            "max_chars": str(opts.get("max_chars", "0")),
-            "start": str(opts.get("start", "1")),
-            "limit": str(opts.get("limit", "0")),
-            "batch_size": str(opts.get("batch_size", "0")),
-            "install_calibre": str(opts.get("install_calibre", "false")).lower(),
+            "retry_count": "0",
         },
     }
     resp = requests.post(url, headers=GH_HEADERS, json=payload, timeout=30)
@@ -142,6 +134,17 @@ def gh_get_release(tag):
     r = requests.get(url, headers=GH_HEADERS, timeout=30)
     if r.status_code == 200:
         return r.json()
+    return None
+
+
+def gh_wait_published_release(tag, timeout=30 * 24 * 3600):
+    """Wait across the chained workflow runs until the draft is published."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        release = gh_get_release(tag)
+        if release and not release.get("draft", False):
+            return release
+        time.sleep(30)
     return None
 
 
@@ -432,44 +435,21 @@ async def run_job(chat_id, state, context):
         parse_mode="HTML",
     )
 
-    # 3. Theo doi run.
-    run_id = gh_find_run(job_id, since_iso)
-    if not run_id:
-        await context.bot.send_message(
-            chat_id,
-            "\u26a0\ufe0f \u0110\u00e3 k\u00edch ho\u1ea1t workflow nh\u01b0ng ch\u01b0a t\u00ecm th\u1ea5y run. H\u00e3y ki\u1ec3m tra tab Actions c\u1ee7a repo.",
-        )
-        return
-    conclusion = gh_wait_run(run_id)
-
-    if conclusion != "success":
-        await context.bot.send_message(
-            chat_id,
-            "\u274c Workflow k\u1ebft th\u00fac v\u1edbi tr\u1ea1ng th\u00e1i: <b>%s</b>. Xem log t\u1ea1i tab Actions." % html.escape(str(conclusion)),
-            parse_mode="HTML",
-        )
-        return
-
-    # 4. Lay Release + gui link.
+    # 3. Chained runs publish the release only after every batch is complete.
     tag = "audiobook-%s" % job_id
-    rel = gh_get_release(tag)
+    rel = await asyncio.to_thread(gh_wait_published_release, tag)
     if not rel:
-        await context.bot.send_message(chat_id, "\u2705 Xong nh\u01b0ng ch\u01b0a th\u1ea5y Release. Th\u1eed l\u1ea1i sau nh\u00e9.")
+        await context.bot.send_message(chat_id, "\u274c Qu\u00e1 th\u1eddi gian ch\u1edd chu\u1ed7i x\u1eed l\u00fd. H\u00e3y ki\u1ec3m tra tab Actions.")
         return
-    assets = rel.get("assets", [])
     title_html = html.escape(state["title"])
     lines = [
         "\U0001f389 <b>Truy\u1ec7n: %s \u0111\u00e3 ho\u00e0n th\u00e0nh!</b>" % title_html,
         "",
+        "\U0001f4e6 <b>S\u1ed1 batch:</b> %d" % len(rel.get("assets", [])),
+        "",
         "\U0001f517 <b>Link t\u1ea3i:</b>",
         rel["html_url"],
     ]
-    if assets:
-        lines.append("")
-        lines.append("\U0001f4c1 <b>File:</b>")
-    for a in assets:
-        size_mb = a.get("size", 0) / (1024 * 1024)
-        lines.append("\u2022 <b>%s</b> (%.1f MB)\n%s" % (html.escape(a["name"]), size_mb, a["browser_download_url"]))
     await context.bot.send_message(chat_id, "\n".join(lines), disable_web_page_preview=True, parse_mode="HTML")
 
 

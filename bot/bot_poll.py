@@ -38,6 +38,8 @@ TG_FILE = "https://api.telegram.org/file/bot%s" % TG_TOKEN
 
 GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GH_REPO = os.environ.get("GITHUB_REPOSITORY", "")  # "owner/repo" (Actions tu dat)
+GH_BRANCH = os.environ.get("GITHUB_REF_NAME", "main")
+WORKFLOW_FILE = os.environ.get("WORKFLOW_FILE", "audiobook.yml")
 GH_API = "https://api.github.com"
 GH_HEADERS = {
     "Authorization": "Bearer %s" % GH_TOKEN,
@@ -434,78 +436,110 @@ def handle_callback(cb, state):
 
 # ------------------------------------------------------------ job runner
 
-def ensure_calibre():
-    if shutil.which("ebook-convert"):
-        return
-    subprocess.run(["sudo", "apt-get", "install", "-y", "calibre"], check=False)
+def git_commit_and_push(paths, message):
+    """Commit selected paths and push with bounded conflict retries."""
+    subprocess.run(["git", "config", "user.name", "github-actions[bot]"], cwd=REPO_ROOT, check=False)
+    subprocess.run(["git", "config", "user.email",
+                    "41898282+github-actions[bot]@users.noreply.github.com"],
+                   cwd=REPO_ROOT, check=False)
+    subprocess.run(["git", "add", "--", *paths], cwd=REPO_ROOT, check=True)
+    staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO_ROOT)
+    if staged.returncode == 0:
+        return True
+    subprocess.run(["git", "commit", "-m", message], cwd=REPO_ROOT, check=True)
+    for attempt in range(1, 5):
+        pull = subprocess.run(
+            ["git", "pull", "--rebase", "--autostash", "origin", GH_BRANCH],
+            cwd=REPO_ROOT,
+        )
+        push = subprocess.run(["git", "push", "origin", "HEAD:%s" % GH_BRANCH],
+                              cwd=REPO_ROOT) if pull.returncode == 0 else pull
+        if pull.returncode == 0 and push.returncode == 0:
+            return True
+        time.sleep(attempt * 3)
+    return False
+
+
+def dispatch_continuous_job(job_id):
+    url = "%s/repos/%s/actions/workflows/%s/dispatches" % (
+        GH_API, GH_REPO, WORKFLOW_FILE)
+    response = requests.post(
+        url, headers=GH_HEADERS,
+        json={"ref": GH_BRANCH, "inputs": {"job_id": job_id, "retry_count": "0"}},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
+def get_published_release(tag):
+    response = requests.get(
+        "%s/repos/%s/releases/tags/%s" % (GH_API, GH_REPO, tag),
+        headers=GH_HEADERS, timeout=30,
+    )
+    if response.status_code == 200:
+        release = response.json()
+        return release if not release.get("draft", False) else None
+    return None
 
 
 def process_ready_job(skey, sess):
+    """Persist the ebook once and start a self-chaining audiobook workflow."""
     chat_id = sess.get("chat_id") or int(skey)
     job_id = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
-    work = os.path.join(WORK_DIR, job_id)
-    chapters = os.path.join(work, "chapters")
-    release = os.path.join(work, "release")
     input_abs = os.path.join(REPO_ROOT, sess["input_path"])
-
-    if sess.get("install_calibre") == "true":
-        ensure_calibre()
+    job_dir = os.path.join(REPO_ROOT, "jobs", job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    ebook_path = os.path.join(job_dir, os.path.basename(sess["filename"]))
+    options = {
+        "title": sess["title"],
+        "format": sess["format"],
+        "length_scale": sess["length_scale"],
+        "start": sess.get("start", "1"),
+        "limit": sess.get("limit", "0"),
+        "continuous_batch_size": "10",
+    }
+    try:
+        shutil.copy2(input_abs, ebook_path)
+        with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+            json.dump(options, f, ensure_ascii=False, indent=2)
+        rel_job = os.path.relpath(job_dir, REPO_ROOT)
+        if not git_commit_and_push([rel_job], "audiobook %s: queue job" % job_id):
+            raise RuntimeError("khong the day job len repository")
+        dispatch_continuous_job(job_id)
+    except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        send(chat_id, "\u274c Kh\u00f4ng th\u1ec3 kh\u1edfi \u0111\u1ed9ng job li\u00ean t\u1ee5c: %s"
+             % html.escape(str(e)))
+        return False
 
     try:
-        subprocess.run(
-            [PY, os.path.join(REPO_ROOT, "pipeline", "parse_ebook.py"),
-             "--input", input_abs, "--out-dir", chapters, "--max-chars", "0",
-             "--start", str(sess.get("start", "1")),
-             "--limit", str(sess.get("limit", "0"))],
-            check=True, cwd=REPO_ROOT,
-        )
-        subprocess.run(
-            [PY, os.path.join(REPO_ROOT, "pipeline", "batch_tts.py"),
-             "--chapters-dir", chapters, "--out-dir", release,
-             "--title", sess["title"], "--format", sess["format"],
-             "--length-scale", str(sess["length_scale"]), "--package", "auto",
-             "--batch-size", str(sess.get("batch_size", "0"))],
-            check=True, cwd=REPO_ROOT,
-        )
-    except subprocess.CalledProcessError as e:
-        send(chat_id, "\u274c T\u1ea1o audio th\u1ea5t b\u1ea1i (%s).\nB\u1ea1n xem log tr\u00ean GitHub Actions \u0111\u1ec3 bi\u1ebft chi ti\u1ebft nh\u00e9."
-             % html.escape(str(e)))
-        shutil.rmtree(work, ignore_errors=True)
-        return
-
-    files = [
-        os.path.join(release, f) for f in sorted(os.listdir(release))
-        if not f.endswith(".json")
-    ]
-    summary_path = os.path.join(release, "summary.json")
-    body = ""
-    if os.path.isfile(summary_path):
-        with open(summary_path, "r", encoding="utf-8") as f:
-            body = f.read()
-
-    rel = create_release_with_assets(
-        "audiobook-%s" % job_id, "Audiobook %s" % sess["title"], body, files
-    )
-    title_html = html.escape(sess["title"])
-    lines = [
-        "\U0001f389 <b>Truy\u1ec7n: %s \u0111\u00e3 ho\u00e0n th\u00e0nh!</b>" % title_html,
-        "",
-        "\U0001f517 <b>Link t\u1ea3i:</b>",
-        rel.get("html_url", ""),
-    ]
-    if rel.get("assets"):
-        lines.append("")
-        lines.append("\U0001f4c1 <b>File:</b>")
-    for a in rel.get("assets", []):
-        size_mb = a.get("size", 0) / (1024 * 1024)
-        lines.append("\u2022 <b>%s</b> (%.1f MB)\n%s"
-                     % (html.escape(a["name"]), size_mb, a["browser_download_url"]))
-    send(chat_id, "\n".join(lines))
-
-    # Don dep file tam + upload.
-    shutil.rmtree(work, ignore_errors=True)
-    if os.path.exists(input_abs):
         os.remove(input_abs)
+    except OSError:
+        pass
+    sess.pop("input_path", None)
+    sess["step"] = "waiting_release"
+    sess["job_id"] = job_id
+    sess["release_tag"] = "audiobook-%s" % job_id
+    sess["started_at"] = dt.datetime.utcnow().isoformat() + "Z"
+    send(chat_id,
+         "\u2705 Job <code>%s</code> \u0111\u00e3 b\u1eaft \u0111\u1ea7u. Bot s\u1ebd t\u1ef1 chia batch, "
+         "t\u1ef1 ch\u1ea1y ti\u1ebfp v\u00e0 b\u00e1o khi to\u00e0n b\u1ed9 ho\u00e0n t\u1ea5t."
+         % html.escape(job_id))
+    return True
+
+
+def check_waiting_job(skey, sess):
+    release = get_published_release(sess.get("release_tag", ""))
+    if not release:
+        return False
+    chat_id = sess.get("chat_id") or int(skey)
+    send(chat_id,
+         "\U0001f389 <b>Truy\u1ec7n: %s \u0111\u00e3 ho\u00e0n th\u00e0nh!</b>\n\n"
+         "\U0001f4e6 S\u1ed1 batch: <b>%d</b>\n"
+         "\U0001f517 <b>Link t\u1ea3i:</b>\n%s"
+         % (html.escape(sess.get("title", "Audiobook")),
+            len(release.get("assets", [])), release.get("html_url", "")))
+    return True
 
 
 # ------------------------------------------------------------ main
@@ -531,21 +565,20 @@ def poll_once(state, long_poll=False):
     for skey in list(state["sessions"].keys()):
         sess = state["sessions"][skey]
         if sess.get("step") == "ready":
-            process_ready_job(skey, sess)
-            state["sessions"].pop(skey, None)
-            changed = True
+            if process_ready_job(skey, sess):
+                changed = True
+        elif sess.get("step") == "waiting_release":
+            if check_waiting_job(skey, sess):
+                state["sessions"].pop(skey, None)
+                changed = True
     return changed
 
 
 def git_persist(message):
     """Persist conversation metadata only; never commit uploaded books."""
     try:
-        subprocess.run(["git", "add", "bot/state/state.json"], cwd=REPO_ROOT, check=False)
-        staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO_ROOT)
-        if staged.returncode != 0:
-            subprocess.run(["git", "commit", "-m", message], cwd=REPO_ROOT, check=False)
-            subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=REPO_ROOT, check=False)
-            subprocess.run(["git", "push"], cwd=REPO_ROOT, check=False)
+        if not git_commit_and_push(["bot/state/state.json"], message):
+            print("Khong the day state bot sau 4 lan thu", file=sys.stderr)
     except Exception as e:  # noqa
         print("Loi luu state: %s" % e, file=sys.stderr)
 

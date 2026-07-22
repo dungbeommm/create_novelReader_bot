@@ -1,0 +1,44 @@
+name: Continuous Audiobook Watchdog
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: continuous-audiobook-watchdog
+  cancel-in-progress: true
+
+jobs:
+  resume-stalled-jobs:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resume jobs without an active workflow
+        shell: bash
+        run: |
+          shopt -s nullglob
+          active="$(gh run list --workflow audiobook.yml --limit 100 \
+            --json status,displayTitle --jq '.[] | select(.status == "queued" or .status == "in_progress") | .displayTitle')"
+          for job_file in jobs/*/job.json; do
+            job_id="$(basename "$(dirname "$job_file")")"
+            [[ "$job_id" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+            progress="$(dirname "$job_file")/progress.json"
+            if [ -f "$progress" ] && [ "$(jq -r '.status // "processing"' "$progress")" = "complete" ]; then
+              continue
+            fi
+            if printf '%s\n' "$active" | grep -Fq "$job_id"; then
+              echo "$job_id already has an active run"
+              continue
+            fi
+            echo "Resuming stalled job $job_id"
+            gh workflow run audiobook.yml --ref "$GITHUB_REF_NAME" \
+              -f job_id="$job_id" -f retry_count=0
+          done

@@ -1,95 +1,190 @@
-name: Ebook to Audiobook
-run-name: Audiobook ${{ inputs.job_id }}
+name: Continuous Ebook to Audiobook
+run-name: Audiobook ${{ inputs.job_id }} attempt ${{ inputs.retry_count }}
 
 on:
   workflow_dispatch:
     inputs:
-      job_id: {description: Job ID, required: true, type: string}
-      title: {description: Ten truyen, required: false, default: audiobook, type: string}
-      format: {description: Dinh dang, required: false, default: mp3, type: choice, options: [mp3, m4b, wav, ogg, opus]}
-      length_scale: {description: Toc do, required: false, default: "1.0", type: string}
-      package: {description: Cach dong goi, required: false, default: auto, type: choice, options: [auto, zip, single, files]}
-      max_chars: {description: Gioi han ky tu moi phan, required: false, default: "0", type: string}
-      start: {description: Chuong bat dau, required: false, default: "1", type: string}
-      limit: {description: So chuong, required: false, default: "0", type: string}
-      batch_size: {description: So chuong moi ZIP, required: false, default: "0", type: string}
-      install_calibre: {description: Cai Calibre, required: false, default: "false", type: choice, options: ["false", "true"]}
+      job_id:
+        description: Job ID already stored under jobs/
+        required: true
+        type: string
+      retry_count:
+        description: Internal retry counter
+        required: false
+        default: "0"
+        type: string
 
 permissions:
   contents: write
+  actions: write
+
+concurrency:
+  group: audiobook-${{ inputs.job_id }}
+  cancel-in-progress: false
 
 env:
   JOB_ID: ${{ inputs.job_id }}
-  BOOK_TITLE: ${{ inputs.title }}
-  AUDIO_FORMAT: ${{ inputs.format }}
-  LENGTH_SCALE: ${{ inputs.length_scale }}
-  PACKAGE_MODE: ${{ inputs.package }}
-  MAX_CHARS: ${{ inputs.max_chars }}
-  START_CHAPTER: ${{ inputs.start }}
-  CHAPTER_LIMIT: ${{ inputs.limit }}
-  BATCH_SIZE: ${{ inputs.batch_size }}
+  RETRY_COUNT: ${{ inputs.retry_count }}
+  CONTINUOUS_BATCH_SIZE: "10"
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
-  build:
+  process-next-batch:
     runs-on: ubuntu-22.04
-    timeout-minutes: 355
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Validate job ID
+
+      - name: Validate job
+        shell: bash
         run: |
-          [[ "$JOB_ID" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid job_id"; exit 2; }
-          test -d "jobs/$JOB_ID" || { echo "Missing job directory"; exit 2; }
+          [[ "$JOB_ID" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid job ID"; exit 2; }
+          test -f "jobs/$JOB_ID/job.json" || { echo "Missing job.json"; exit 2; }
+          mapfile -d '' books < <(find "jobs/$JOB_ID" -maxdepth 1 -type f ! -name job.json ! -name progress.json -print0)
+          [ "${#books[@]}" -eq 1 ] || { echo "Expected exactly one ebook"; exit 2; }
+          printf 'EBOOK_PATH=%s\n' "${books[0]}" >> "$GITHUB_ENV"
+
+      - name: Read format requirements
+        id: options
+        shell: bash
+        run: |
+          ext="${EBOOK_PATH##*.}"
+          ext="${ext,,}"
+          if [[ "$ext" =~ ^(mobi|azw|azw3|fb2|rtf|lit|pdb)$ ]]; then
+            echo "calibre=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "calibre=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg poppler-utils
-          if [ "${{ inputs.install_calibre }}" = "true" ]; then
+          if [ "${{ steps.options.outputs.calibre }}" = "true" ]; then
             sudo apt-get install -y --no-install-recommends calibre
           fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: pip
+
       - name: Install Python dependencies
         run: pip install --requirement requirements.txt --requirement pipeline/requirements-pipeline.txt
-      - name: Find ebook
-        shell: bash
+
+      - name: Plan next batch
         run: |
-          mapfile -d '' books < <(find "jobs/$JOB_ID" -maxdepth 1 -type f ! -name job.json -print0)
-          [ "${#books[@]}" -eq 1 ] || { echo "Expected exactly one ebook, found ${#books[@]}"; exit 2; }
-          printf 'EBOOK_PATH=%s\n' "${books[0]}" >> "$GITHUB_ENV"
-      - name: Parse ebook
+          python pipeline/continuous_job.py plan \
+            --job-dir "jobs/$JOB_ID" --ebook "$EBOOK_PATH" \
+            --parser pipeline/parse_ebook.py
+
+      - name: Parse selected chapters
+        if: env.ALREADY_COMPLETE != 'true'
         run: |
           python pipeline/parse_ebook.py --input "$EBOOK_PATH" --out-dir chapters \
-            --max-chars "$MAX_CHARS" --start "$START_CHAPTER" --limit "$CHAPTER_LIMIT"
-      - name: Generate audiobook
+            --start "$BATCH_START" --limit "$BATCH_LIMIT"
+
+      - name: Synthesize selected chapters
+        if: env.ALREADY_COMPLETE != 'true'
         run: |
           python pipeline/batch_tts.py --chapters-dir chapters --out-dir release \
-            --title "$BOOK_TITLE" --format "$AUDIO_FORMAT" --length-scale "$LENGTH_SCALE" \
-            --package "$PACKAGE_MODE" --batch-size "$BATCH_SIZE"
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
+            --title "$BOOK_TITLE" --format "$AUDIO_FORMAT" \
+            --length-scale "$LENGTH_SCALE" --package zip --batch-size 0
+
+      - name: Prepare persistent asset
+        if: env.ALREADY_COMPLETE != 'true'
+        shell: bash
         run: |
-          mapfile -d '' assets < <(find release -maxdepth 1 -type f ! -name summary.json ! -name '*.sha256' -print0)
-          [ "${#assets[@]}" -gt 0 ] || { echo "No output assets"; exit 3; }
+          mapfile -d '' files < <(find release -maxdepth 1 -type f ! -name summary.json ! -name '*.sha256' -print0)
+          [ "${#files[@]}" -gt 0 ] || { echo "No output assets"; exit 3; }
+          if [ "${#files[@]}" -gt 1 ]; then
+            asset="release/${JOB_ID}_chapters_${BATCH_START}-${BATCH_END}.zip"
+            zip -j "$asset" "${files[@]}"
+          else
+            ext="${files[0]##*.}"
+            asset="release/${JOB_ID}_chapters_${BATCH_START}-${BATCH_END}.${ext}"
+            mv "${files[0]}" "$asset"
+          fi
+          echo "BATCH_ASSET=$asset" >> "$GITHUB_ENV"
+          echo "BATCH_ASSET_NAME=$(basename "$asset")" >> "$GITHUB_ENV"
+
+      - name: Create draft release and upload batch
+        if: env.ALREADY_COMPLETE != 'true'
+        shell: bash
+        run: |
           tag="audiobook-$JOB_ID"
-          gh release create "$tag" "${assets[@]}" --title "Audiobook $BOOK_TITLE" --notes-file release/summary.json
-      - name: Remove processed job
-        if: success()
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --draft --title "Audiobook $BOOK_TITLE" \
+              --notes "Processing automatically. Completed batches will appear here."
+          fi
+          for attempt in 1 2 3; do
+            gh release upload "$tag" "$BATCH_ASSET" --clobber && exit 0
+            sleep $((attempt * 10))
+          done
+          exit 1
+
+      - name: Save checkpoint
+        if: env.ALREADY_COMPLETE != 'true'
+        run: |
+          python pipeline/continuous_job.py advance --job-dir "jobs/$JOB_ID" \
+            --start "$BATCH_START" --end "$BATCH_END" --asset "$BATCH_ASSET_NAME"
+
+      - name: Push checkpoint
+        if: env.ALREADY_COMPLETE != 'true'
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "jobs/$JOB_ID/progress.json"
+          git commit -m "audiobook $JOB_ID: checkpoint through chapter $BATCH_END" || true
+          for attempt in 1 2 3 4; do
+            git pull --rebase --autostash origin "$GITHUB_REF_NAME" && git push && exit 0
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      - name: Dispatch next batch
+        if: env.JOB_COMPLETE == 'false'
+        run: |
+          gh workflow run audiobook.yml --ref "$GITHUB_REF_NAME" \
+            -f job_id="$JOB_ID" -f retry_count=0
+
+      - name: Publish completed release
+        if: env.JOB_COMPLETE == 'true' || env.ALREADY_COMPLETE == 'true'
+        shell: bash
+        run: |
+          tag="audiobook-$JOB_ID"
+          gh release edit "$tag" --draft=false \
+            --notes-file "jobs/$JOB_ID/progress.json"
+
+      - name: Clean completed job
+        if: env.JOB_COMPLETE == 'true' || env.ALREADY_COMPLETE == 'true'
+        shell: bash
         run: |
           rm -rf "jobs/$JOB_ID"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add jobs
-          if ! git diff --cached --quiet; then
-            git commit -m "cleanup audiobook job $JOB_ID"
-            for attempt in 1 2 3; do
-              git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push && exit 0
-              sleep $((attempt * 2))
-            done
-            echo "Release succeeded, but job cleanup could not be pushed" >&2
-            exit 1
+          git commit -m "audiobook $JOB_ID: complete" || exit 0
+          for attempt in 1 2 3 4; do
+            git pull --rebase --autostash origin "$GITHUB_REF_NAME" && git push && exit 0
+            sleep $((attempt * 5))
+          done
+          echo "Release is complete; deferred repository cleanup" >&2
+
+      - name: Retry failed batch automatically
+        if: failure()
+        shell: bash
+        run: |
+          retry="${RETRY_COUNT:-0}"
+          [[ "$retry" =~ ^[0-9]+$ ]] || retry=0
+          if [ "$retry" -lt 3 ]; then
+            next=$((retry + 1))
+            gh workflow run audiobook.yml --ref "$GITHUB_REF_NAME" \
+              -f job_id="$JOB_ID" -f retry_count="$next"
+            echo "Dispatched automatic retry $next/3"
+          else
+            echo "Batch failed after 3 retries" >&2
           fi
