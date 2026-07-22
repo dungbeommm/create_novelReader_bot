@@ -18,6 +18,7 @@ Trang thai (offset + phien hoi thoai) luu tai bot/state/state.json va file
 upload tam tai bot/state/uploads/. Workflow se commit lai sau moi lan chay.
 """
 import datetime as dt
+import html
 import json
 import os
 import secrets
@@ -61,15 +62,15 @@ SUPPORTED_EXT = (
 CALIBRE_EXT = {".mobi", ".azw3", ".azw", ".fb2", ".lit", ".pdb"}
 
 SPEED_OPTIONS = {
-    "speed_0.9": ("Nhanh (0.9)", "0.9"),
-    "speed_1.0": ("Chuan (1.0)", "1.0"),
-    "speed_1.1": ("Cham (1.1)", "1.1"),
-    "speed_1.3": ("Rat cham (1.3)", "1.3"),
+    "speed_0.9": ("\u26a1 Nhanh (0.9)", "0.9"),
+    "speed_1.0": ("\U0001f3c3 Chu\u1ea9n (1.0)", "1.0"),
+    "speed_1.1": ("\U0001f6b6 Ch\u1eadm (1.1)", "1.1"),
+    "speed_1.3": ("\U0001f422 R\u1ea5t ch\u1eadm (1.3)", "1.3"),
 }
 FORMAT_OPTIONS = {
-    "fmt_mp3": ("MP3", "mp3"),
-    "fmt_m4b": ("M4B (audiobook)", "m4b"),
-    "fmt_wav": ("WAV", "wav"),
+    "fmt_mp3": ("\U0001f3b5 MP3", "mp3"),
+    "fmt_m4b": ("\U0001f4da M4B (audiobook)", "m4b"),
+    "fmt_wav": ("\U0001f4bf WAV", "wav"),
 }
 
 
@@ -83,18 +84,32 @@ def tg(method, **params):
         return {"ok": False}
 
 
-def send(chat_id, text, reply_markup=None):
+def send(chat_id, text, reply_markup=None, parse_mode="HTML"):
     params = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if parse_mode:
+        params["parse_mode"] = parse_mode
     if reply_markup:
         params["reply_markup"] = reply_markup
     return tg("sendMessage", **params)
 
 
-def edit(chat_id, message_id, text, reply_markup=None):
+def edit(chat_id, message_id, text, reply_markup=None, parse_mode="HTML"):
     params = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if parse_mode:
+        params["parse_mode"] = parse_mode
     if reply_markup:
         params["reply_markup"] = reply_markup
     return tg("editMessageText", **params)
+
+
+def set_commands():
+    """Dat menu lenh goi y (hien khi go '/') cho dep va tien."""
+    tg("setMyCommands", commands=[
+        {"command": "tts", "description": "\U0001f3a7 T\u1ea1o audiobook t\u1eeb file ebook"},
+        {"command": "skip", "description": "\u23ed\ufe0f B\u1ecf qua \u0111\u1eb7t t\u00ean truy\u1ec7n"},
+        {"command": "help", "description": "\u2753 Xem h\u01b0\u1edbng d\u1eabn"},
+        {"command": "start", "description": "\U0001f44b Gi\u1edbi thi\u1ec7u bot"},
+    ])
 
 
 def answer_cb(cb_id):
@@ -163,17 +178,23 @@ def create_release_with_assets(tag, name, body, files):
 # ------------------------------------------------------------ handlers
 
 START_TEXT = (
-    "Xin chao! Toi tao audiobook giong Ngoc Huyen tu file ebook cua ban.\n\n"
-    "Go /tts de bat dau: toi se yeu cau tai file, hoi TEN TRUYEN, roi cho chon "
-    "toc do doc va dinh dang audio.\n"
-    "Luu y: bot chay tren GitHub theo lich nen co the tra loi cham vai phut."
+    "\U0001f44b <b>Ch\u00e0o b\u1ea1n!</b>\n\n"
+    "M\u00ecnh l\u00e0 bot chuy\u1ec3n <b>ebook</b> th\u00e0nh <b>audiobook</b> "
+    "v\u1edbi gi\u1ecdng \u0111\u1ecdc <b>Ng\u1ecdc Huy\u1ec1n</b>. \U0001f3a7\n\n"
+    "\U0001f4d6 G\u1eedi m\u1ed9t file ebook, m\u00ecnh s\u1ebd \u0111\u1ecdc th\u00e0nh file \u00e2m thanh cho b\u1ea1n.\n\n"
+    "\u25b6\ufe0f G\u00f5 /tts \u0111\u1ec3 b\u1eaft \u0111\u1ea7u."
 )
 HELP_TEXT = (
-    "Cach dung:\n"
-    "1. /tts -> gui file ebook (.txt, .epub, .zip, .mobi, .pdf, .docx... <=20MB).\n"
-    "2. Go TEN TRUYEN (hoac /skip de dung mac dinh).\n"
-    "3. Chon TOC DO va DINH DANG.\n"
-    "4. Cho GitHub tao xong -> toi gui link Release."
+    "\U0001f4da <b>H\u01b0\u1edbng d\u1eabn s\u1eed d\u1ee5ng</b>\n\n"
+    "<b>1.</b> G\u00f5 /tts r\u1ed3i g\u1eedi file ebook.\n"
+    "<b>2.</b> Nh\u1eadp <b>t\u00ean truy\u1ec7n</b> (ho\u1eb7c /skip \u0111\u1ec3 d\u00f9ng t\u00ean file).\n"
+    "<b>3.</b> Ch\u1ecdn <b>t\u1ed1c \u0111\u1ed9 \u0111\u1ecdc</b> v\u00e0 <b>\u0111\u1ecbnh d\u1ea1ng</b> audio.\n"
+    "<b>4.</b> Ch\u1edd m\u00ecnh t\u1ea1o xong v\u00e0 g\u1eedi link t\u1ea3i v\u1ec1. \u2728\n\n"
+    "\U0001f4c1 <i>H\u1ed7 tr\u1ee3: .txt, .epub, .pdf, .docx, .zip, .mobi\u2026 (t\u1ed1i \u0111a 20MB)</i>\n\n"
+    "<b>L\u1ec7nh:</b>\n"
+    "\u2022 /tts \u2014 B\u1eaft \u0111\u1ea7u t\u1ea1o audiobook\n"
+    "\u2022 /skip \u2014 B\u1ecf qua \u0111\u1eb7t t\u00ean\n"
+    "\u2022 /help \u2014 Xem h\u01b0\u1edbng d\u1eabn"
 )
 
 
@@ -184,7 +205,7 @@ def handle_message(msg, state):
     skey = str(chat_id)
 
     if not allowed(user_id):
-        send(chat_id, "Ban khong co quyen dung bot nay.")
+        send(chat_id, "\U0001f6ab B\u1ea1n kh\u00f4ng c\u00f3 quy\u1ec1n s\u1eed d\u1ee5ng bot n\u00e0y.")
         return
 
     # --- Document ---
@@ -193,16 +214,18 @@ def handle_message(msg, state):
         name = doc.get("file_name") or "input.txt"
         ext = os.path.splitext(name)[1].lower()
         if ext not in SUPPORTED_EXT:
-            send(chat_id, "Dinh dang %r chua ho tro. Hay gui: %s" % (ext, ", ".join(SUPPORTED_EXT)))
+            send(chat_id, "\u26a0\ufe0f \u0110\u1ecbnh d\u1ea1ng <code>%s</code> ch\u01b0a \u0111\u01b0\u1ee3c h\u1ed7 tr\u1ee3.\n\nH\u00e3y g\u1eedi c\u00e1c \u0111\u1ecbnh d\u1ea1ng: %s"
+                 % (html.escape(ext), ", ".join(SUPPORTED_EXT)))
             return
         if doc.get("file_size", 0) > 20 * 1024 * 1024:
-            send(chat_id, "File > 20MB, bot Telegram khong tai duoc. Hay chia nho hoac dung bot VPS.")
+            send(chat_id, "\u26a0\ufe0f File l\u1edbn h\u01a1n <b>20MB</b> n\u00ean bot Telegram kh\u00f4ng t\u1ea3i \u0111\u01b0\u1ee3c.\n"
+                 "B\u1ea1n h\u00e3y chia nh\u1ecf file, ho\u1eb7c d\u00f9ng b\u1ea3n ch\u1ea1y tr\u00ean m\u00e1y/VPS.")
             return
         dest = os.path.join(UPLOAD_DIR, skey, name)
         try:
             download_tg_file(doc["file_id"], dest)
         except Exception as e:  # noqa
-            send(chat_id, "Loi tai file: %s" % e)
+            send(chat_id, "\u274c L\u1ed7i khi t\u1ea3i file: %s" % html.escape(str(e)))
             return
         sessions[skey] = {
             "step": "await_title",
@@ -213,8 +236,10 @@ def handle_message(msg, state):
             "format": "mp3",
             "install_calibre": "true" if ext in CALIBRE_EXT else "false",
         }
-        send(chat_id, "Da nhan file. TEN TRUYEN la gi? Go ten, hoac /skip de dung: %s"
-             % os.path.splitext(name)[0])
+        send(chat_id,
+             "\u2705 <b>\u0110\u00e3 nh\u1eadn file:</b> <code>%s</code>\n\n"
+             "\U0001f4dd <b>T\u00ean truy\u1ec7n</b> l\u00e0 g\u00ec? Nh\u1eadp t\u00ean, ho\u1eb7c g\u00f5 /skip \u0111\u1ec3 d\u00f9ng: <i>%s</i>"
+             % (html.escape(name), html.escape(os.path.splitext(name)[0])))
         return
 
     # --- Text / commands ---
@@ -228,7 +253,9 @@ def handle_message(msg, state):
         return
     if cmd in ("/tts",):
         sessions[skey] = {"step": "await_file"}
-        send(chat_id, "Hay gui (dinh kem) file ebook can chuyen thanh audio (<=20MB).")
+        send(chat_id,
+             "\U0001f4ce H\u00e3y g\u1eedi (\u0111\u00ednh k\u00e8m) <b>file ebook</b> b\u1ea1n mu\u1ed1n chuy\u1ec3n th\u00e0nh audio.\n\n"
+             "<i>H\u1ed7 tr\u1ee3: .txt, .epub, .pdf, .docx, .zip, .mobi\u2026 (t\u1ed1i \u0111a 20MB)</i>")
         return
 
     sess = sessions.get(skey)
@@ -245,7 +272,10 @@ def handle_message(msg, state):
 
 def ask_speed(chat_id, sess):
     sess["step"] = "await_speed"
-    send(chat_id, "Truyen: %s\nChon TOC DO doc:" % sess["title"], reply_markup=kb(SPEED_OPTIONS))
+    send(chat_id,
+         "\U0001f3ac <b>Truy\u1ec7n:</b> %s\n\n\u23f1\ufe0f Ch\u1ecdn <b>t\u1ed1c \u0111\u1ed9 \u0111\u1ecdc</b>:"
+         % html.escape(sess["title"]),
+         reply_markup=kb(SPEED_OPTIONS))
 
 
 def handle_callback(cb, state):
@@ -256,13 +286,16 @@ def handle_callback(cb, state):
     data = cb.get("data", "")
     sess = state["sessions"].get(str(chat_id))
     if not sess:
-        edit(chat_id, message_id, "Phien da het han. Hay gui lai file hoac /tts.")
+        edit(chat_id, message_id,
+             "\u231b Phi\u00ean \u0111\u00e3 h\u1ebft h\u1ea1n. H\u00e3y g\u1eedi l\u1ea1i file ho\u1eb7c g\u00f5 /tts \u0111\u1ec3 b\u1eaft \u0111\u1ea7u l\u1ea1i.")
         return
 
     if data in SPEED_OPTIONS:
         sess["length_scale"] = SPEED_OPTIONS[data][1]
         sess["step"] = "await_format"
-        edit(chat_id, message_id, "Toc do: %s. Gio chon DINH DANG audio:" % SPEED_OPTIONS[data][0],
+        edit(chat_id, message_id,
+             "\u23f1\ufe0f T\u1ed1c \u0111\u1ed9: <b>%s</b>\n\n\U0001f3b5 Gi\u1edd ch\u1ecdn <b>\u0111\u1ecbnh d\u1ea1ng</b> audio:"
+             % SPEED_OPTIONS[data][0],
              reply_markup=kb(FORMAT_OPTIONS))
         return
 
@@ -271,8 +304,10 @@ def handle_callback(cb, state):
         sess["step"] = "ready"
         sess["chat_id"] = chat_id
         edit(chat_id, message_id,
-             "Truyen: %s\nToc do: %s | Dinh dang: %s\n\nBat dau tao audio..."
-             % (sess["title"], sess["length_scale"], FORMAT_OPTIONS[data][1]))
+             "\U0001f3ac <b>Truy\u1ec7n:</b> %s\n"
+             "\u23f1\ufe0f T\u1ed1c \u0111\u1ed9: <b>%s</b>  |  \U0001f3b5 \u0110\u1ecbnh d\u1ea1ng: <b>%s</b>\n\n"
+             "\u23f3 <b>\u0110ang b\u1eaft \u0111\u1ea7u t\u1ea1o audio\u2026</b> M\u00ecnh s\u1ebd b\u00e1o khi xong nh\u00e9!"
+             % (html.escape(sess["title"]), sess["length_scale"], FORMAT_OPTIONS[data][1]))
         return
 
 
@@ -309,7 +344,8 @@ def process_ready_job(skey, sess):
             check=True, cwd=REPO_ROOT,
         )
     except subprocess.CalledProcessError as e:
-        send(chat_id, "Tao audio that bai (%s). Xem log GitHub Actions." % e)
+        send(chat_id, "\u274c T\u1ea1o audio th\u1ea5t b\u1ea1i (%s).\nB\u1ea1n xem log tr\u00ean GitHub Actions \u0111\u1ec3 bi\u1ebft chi ti\u1ebft nh\u00e9."
+             % html.escape(str(e)))
         shutil.rmtree(work, ignore_errors=True)
         return
 
@@ -326,10 +362,20 @@ def process_ready_job(skey, sess):
     rel = create_release_with_assets(
         "audiobook-%s" % job_id, "Audiobook %s" % sess["title"], body, files
     )
-    lines = ["Truyen: %s da hoan thanh!" % sess["title"], "Link nhu sau:", rel.get("html_url", ""), ""]
+    title_html = html.escape(sess["title"])
+    lines = [
+        "\U0001f389 <b>Truy\u1ec7n: %s \u0111\u00e3 ho\u00e0n th\u00e0nh!</b>" % title_html,
+        "",
+        "\U0001f517 <b>Link t\u1ea3i:</b>",
+        rel.get("html_url", ""),
+    ]
+    if rel.get("assets"):
+        lines.append("")
+        lines.append("\U0001f4c1 <b>File:</b>")
     for a in rel.get("assets", []):
         size_mb = a.get("size", 0) / (1024 * 1024)
-        lines.append("- %s (%.1f MB): %s" % (a["name"], size_mb, a["browser_download_url"]))
+        lines.append("\u2022 <b>%s</b> (%.1f MB)\n%s"
+                     % (html.escape(a["name"]), size_mb, a["browser_download_url"]))
     send(chat_id, "\n".join(lines))
 
     # Don dep file tam + upload.
@@ -382,6 +428,10 @@ def git_persist(message):
 
 def main():
     loop = "--loop" in sys.argv
+    try:
+        set_commands()
+    except Exception:  # noqa
+        pass
     state = load_state()
 
     if not loop:

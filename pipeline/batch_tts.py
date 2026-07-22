@@ -26,7 +26,9 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import wave
+import zipfile
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MODEL = os.path.join(BASE_DIR, "..", "voice", "ngochuyennew.onnx")
@@ -58,6 +60,84 @@ def synth_to_wav(voice, text, out_wav, length_scale=None, noise_scale=None, nois
                 voice.synthesize(text, wav_file, **kwargs)
             except TypeError:
                 voice.synthesize_wav(text, wav_file)
+
+
+# --- helper moi: chia nho van ban + gom WAV (chong tran bo nho voi chuong dai) ---
+
+def split_text(text, max_chars):
+    """Chia van ban dai thanh cac doan <= max_chars, uu tien cat theo cau/dong."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return [text]
+    parts = re.split(r"(?<=[.!?\u2026])\s+|\n+", text)
+    chunks, cur = [], ""
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        if len(p) > max_chars:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            for i in range(0, len(p), max_chars):
+                chunks.append(p[i:i + max_chars])
+            continue
+        if cur and len(cur) + len(p) + 1 > max_chars:
+            chunks.append(cur)
+            cur = p
+        else:
+            cur = (cur + " " + p).strip() if cur else p
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def concat_wavs(parts, out_path):
+    """Noi nhieu file WAV cung dinh dang thanh 1 (khong re-encode)."""
+    with wave.open(parts[0], "rb") as w0:
+        params = w0.getparams()
+    with wave.open(out_path, "wb") as out:
+        out.setparams(params)
+        for p in parts:
+            with wave.open(p, "rb") as w:
+                out.writeframes(w.readframes(w.getnframes()))
+
+
+def synth_chapter(voice, text, out_wav, work_dir, chunk_chars,
+                  length_scale=None, noise_scale=None, noise_w=None):
+    """Tong hop 1 chuong; neu qua dai thi chia nho roi gom lai de tranh OOM."""
+    chunks = split_text(text, chunk_chars)
+    if len(chunks) <= 1:
+        synth_to_wav(voice, text, out_wav, length_scale, noise_scale, noise_w)
+        return
+    base = os.path.splitext(os.path.basename(out_wav))[0]
+    parts = []
+    for i, ch in enumerate(chunks):
+        pp = os.path.join(work_dir, "%s__p%04d.wav" % (base, i))
+        synth_to_wav(voice, ch, pp, length_scale, noise_scale, noise_w)
+        parts.append(pp)
+    concat_wavs(parts, out_wav)
+    for pp in parts:
+        try:
+            os.remove(pp)
+        except OSError:
+            pass
+
+
+def audio_duration(path):
+    """Do dai audio (giay); ho tro ca WAV lan dinh dang khac qua ffprobe."""
+    try:
+        with wave.open(path, "rb") as w:
+            return w.getnframes() / float(w.getframerate())
+    except Exception:
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=nw=1:nk=1", path],
+                capture_output=True, text=True, check=True,
+            )
+            return float(out.stdout.strip())
+        except Exception:
+            return 0.0
 
 
 # ------------------------------------------------------------ ffmpeg utils
@@ -98,7 +178,7 @@ def build_m4b(wav_files, titles, out_path, title):
     start_ms = 0
     concat_list = []
     for wav, chap_title in zip(wav_files, titles):
-        dur_ms = int(wav_duration(wav) * 1000)
+        dur_ms = int(audio_duration(wav) * 1000)
         end_ms = start_ms + dur_ms
         meta_lines += [
             "[CHAPTER]",
@@ -174,6 +254,12 @@ def main():
     ap.add_argument("--noise-w", type=float, default=None)
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--config", default=DEFAULT_CONFIG)
+    ap.add_argument("--chunk-chars", type=int,
+                    default=int(os.environ.get("TTS_CHUNK_CHARS", "2500")),
+                    help="Chia nho chuong dai hon N ky tu khi tong hop (chong OOM)")
+    ap.add_argument("--max-runtime-sec", type=int,
+                    default=int(os.environ.get("TTS_MAX_RUNTIME_SEC", "0")),
+                    help="Ngan sach thoi gian: dung tam va giu tien do (0 = khong gioi han)")
     args = ap.parse_args()
 
     opts = load_job_options(args.job)
@@ -202,68 +288,127 @@ def main():
     voice = load_voice(args.model, args.config)
 
     title_slug = re.sub(r"[^A-Za-z0-9]+", "_", title).strip("_").lower() or "audiobook"
-    wav_files, out_files, titles = [], [], []
+    per_chapter_fmt = "mp3" if fmt == "m4b" else fmt
+    budget = args.max_runtime_sec
+    start_ts = time.time()
+
+    # Tieu de cac muc khong can doc (muc luc...).
+    SKIP_TITLES = {"table of contents", "contents", "muc luc",
+                   "m\u1ee5c l\u1ee5c", "m\u1ee5c l\u1ee5c."}
+
+    total = len(manifest)
+    done = 0
+    produced_now = 0
+    stopped_early = False
 
     for m in manifest:
         idx = m["index"]
         stem = os.path.splitext(m["file"])[0]
+        out_path = os.path.join(args.out_dir, stem + "." + per_chapter_fmt)
+
+        # Resume: chuong da co file audio thi bo qua (khong lam lai).
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            done += 1
+            continue
+
+        # Ngan sach thoi gian: dung truoc khi runner bi kill, giu lai tien do.
+        if budget > 0 and (time.time() - start_ts) >= budget:
+            stopped_early = True
+            print("\n[!] Het ngan sach thoi gian (%ds) o chuong %d/%d - se tiep tuc o luot sau."
+                  % (budget, idx, total), flush=True)
+            break
+
+        # Bo qua muc luc / muc khong co noi dung.
+        if m["title"].strip().lower() in SKIP_TITLES:
+            print("[%d/%d] Bo qua (muc luc): %s" % (idx, total, m["title"]), flush=True)
+            done += 1
+            continue
+
         txt_path = os.path.join(args.chapters_dir, m["file"])
         with open(txt_path, "r", encoding="utf-8") as f:
             text = f.read().strip()
         if not text:
+            done += 1
             continue
+
         wav_path = os.path.join(args.work_dir, stem + ".wav")
-        print("[%03d/%03d] TTS: %s (%d ky tu)" % (idx, len(manifest), m["title"][:40], len(text)), flush=True)
-        synth_to_wav(voice, text, wav_path, length_scale, noise_scale, noise_w)
-        wav_files.append(wav_path)
-        titles.append(m["title"])
+        print("[%d/%d] TTS: %s (%d ky tu)"
+              % (idx, total, m["title"][:40], len(text)), flush=True)
+        synth_chapter(voice, text, wav_path, args.work_dir, args.chunk_chars,
+                      length_scale, noise_scale, noise_w)
+        convert_audio(wav_path, out_path, per_chapter_fmt)
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+        produced_now += 1
+        done += 1
 
-        if fmt != "m4b":
-            out_path = os.path.join(args.out_dir, stem + "." + fmt)
-            convert_audio(wav_path, out_path, fmt)
-            out_files.append(out_path)
-
-    if not wav_files:
+    # Tat ca file chuong hien co trong out-dir.
+    chapter_files = sorted(
+        os.path.join(args.out_dir, f) for f in os.listdir(args.out_dir)
+        if f.lower().endswith("." + per_chapter_fmt)
+    )
+    if not chapter_files:
         print("Loi: khong tao duoc audio nao", file=sys.stderr)
         sys.exit(3)
 
-    # ---- Dong goi ket qua ----
+    # Chua chay het manifest -> con chuong de lam o luot sau: chi ghi tien do.
+    if stopped_early:
+        summary = {
+            "title": title,
+            "format": per_chapter_fmt,
+            "package": "files",
+            "done": False,
+            "chapters_done": len(chapter_files),
+            "chapters_total": total,
+            "artifacts": [os.path.basename(p) for p in chapter_files],
+        }
+        with open(os.path.join(args.out_dir, "summary.json"), "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        print("\nTien do: %d/%d chuong. Chua hoan tat - chay lai de tiep tuc."
+              % (len(chapter_files), total), flush=True)
+        sys.exit(0)
+
+    # ---- Da xong toan bo: dong goi ket qua ----
     final_artifacts = []
     if fmt == "m4b":
+        titles = [m["title"] for m in manifest][:len(chapter_files)]
         out_path = os.path.join(args.out_dir, title_slug + ".m4b")
-        print("Dang gop %d chuong thanh m4b..." % len(wav_files), flush=True)
-        build_m4b(wav_files, titles, out_path, title)
+        print("Dang gop %d chuong thanh m4b..." % len(chapter_files), flush=True)
+        build_m4b(chapter_files, titles, out_path, title)
         final_artifacts.append(out_path)
     else:
-        multiple = len(out_files) > 1
+        multiple = len(chapter_files) > 1
         want_zip = package == "zip" or (package == "auto" and multiple)
         if want_zip:
-            zip_base = os.path.join(args.out_dir, title_slug)
-            print("Dang nen %d file thanh zip..." % len(out_files), flush=True)
-            shutil.make_archive(zip_base, "zip", args.out_dir)
-            # Xoa file le, chi giu zip.
-            for fp in out_files:
-                if os.path.exists(fp):
+            zip_path = os.path.join(args.out_dir, title_slug + ".zip")
+            print("Dang nen %d file thanh zip..." % len(chapter_files), flush=True)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fp in chapter_files:
+                    zf.write(fp, os.path.basename(fp))
+            for fp in chapter_files:
+                try:
                     os.remove(fp)
-            final_artifacts.append(zip_base + ".zip")
+                except OSError:
+                    pass
+            final_artifacts.append(zip_path)
         else:
-            final_artifacts.extend(out_files)
+            final_artifacts.extend(chapter_files)
 
-    # Ghi summary de workflow / bot doc lai.
     summary = {
         "title": title,
-        "chapters": len(wav_files),
+        "chapters": len(chapter_files),
         "format": fmt,
         "package": package,
+        "done": True,
         "artifacts": [os.path.basename(p) for p in final_artifacts],
-        "total_seconds": round(sum(wav_duration(w) for w in wav_files), 1),
     }
     with open(os.path.join(args.out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
     print("\nHoan tat!")
     print("  Chuong : %d" % summary["chapters"])
-    print("  Thoi luong: %.1f phut" % (summary["total_seconds"] / 60.0))
     print("  File   : %s" % ", ".join(summary["artifacts"]))
 
 

@@ -15,6 +15,7 @@ Chay:
 Yeu cau: python-telegram-bot v20+, requests.
 """
 import base64
+import html
 import json
 import os
 import time
@@ -23,6 +24,7 @@ import secrets
 
 import requests
 from telegram import (
+    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
@@ -139,15 +141,15 @@ def gh_get_release(tag):
 PENDING = {}
 
 SPEED_OPTIONS = {
-    "speed_0.9": ("Nhanh (0.9)", "0.9"),
-    "speed_1.0": ("Chuan (1.0)", "1.0"),
-    "speed_1.1": ("Cham (1.1)", "1.1"),
-    "speed_1.3": ("Rat cham (1.3)", "1.3"),
+    "speed_0.9": ("\u26a1 Nhanh (0.9)", "0.9"),
+    "speed_1.0": ("\U0001f3c3 Chu\u1ea9n (1.0)", "1.0"),
+    "speed_1.1": ("\U0001f6b6 Ch\u1eadm (1.1)", "1.1"),
+    "speed_1.3": ("\U0001f422 R\u1ea5t ch\u1eadm (1.3)", "1.3"),
 }
 FORMAT_OPTIONS = {
-    "fmt_mp3": ("MP3", "mp3"),
-    "fmt_m4b": ("M4B (audiobook)", "m4b"),
-    "fmt_wav": ("WAV", "wav"),
+    "fmt_mp3": ("\U0001f3b5 MP3", "mp3"),
+    "fmt_m4b": ("\U0001f4da M4B (audiobook)", "m4b"),
+    "fmt_wav": ("\U0001f4bf WAV", "wav"),
 }
 
 
@@ -162,55 +164,59 @@ def allowed(update):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Xin chao! Toi tao audiobook giong Ngoc Huyen tu file ebook cua ban.\n\n"
-        "Go /tts de bat dau: toi se yeu cau ban tai file len, hoi TEN TRUYEN, "
-        "roi cho chon toc do doc va dinh dang audio.\n"
-        "Ban cung co the gui thang mot file ebook (.txt, .epub, .zip, .mobi, .pdf, .docx...).\n\n"
-        "Go /help de xem huong dan."
+        "\U0001f44b <b>Ch\u00e0o b\u1ea1n!</b>\n\n"
+        "M\u00ecnh l\u00e0 bot chuy\u1ec3n <b>ebook</b> th\u00e0nh <b>audiobook</b> "
+        "v\u1edbi gi\u1ecdng \u0111\u1ecdc <b>Ng\u1ecdc Huy\u1ec1n</b>. \U0001f3a7\n\n"
+        "\U0001f4d6 G\u1eedi m\u1ed9t file ebook, m\u00ecnh s\u1ebd \u0111\u1ecdc th\u00e0nh file \u00e2m thanh cho b\u1ea1n.\n\n"
+        "\u25b6\ufe0f G\u00f5 /tts \u0111\u1ec3 b\u1eaft \u0111\u1ea7u. G\u00f5 /help \u0111\u1ec3 xem h\u01b0\u1edbng d\u1eabn.",
+        parse_mode="HTML",
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Cach dung:\n"
-        "1. Go /tts -> toi yeu cau tai file, ban gui file ebook.\n"
-        "2. Toi hoi TEN TRUYEN (go ten, hoac /skip de dung mac dinh).\n"
-        "3. Chon TOC DO doc va DINH DANG audio (MP3 / M4B / WAV).\n"
-        "4. Toi bao bat dau tao audio.\n"
-        "5. Khi GitHub tao xong, toi gui tin nhan bao hoan thanh kem link tai.\n\n"
-        "Ho tro: .txt, .epub, .zip(txt), .mobi, .azw3, .fb2, .docx, .pdf, .html"
+        "\U0001f4da <b>H\u01b0\u1edbng d\u1eabn s\u1eed d\u1ee5ng</b>\n\n"
+        "<b>1.</b> G\u00f5 /tts r\u1ed3i g\u1eedi file ebook.\n"
+        "<b>2.</b> Nh\u1eadp <b>t\u00ean truy\u1ec7n</b> (ho\u1eb7c /skip \u0111\u1ec3 d\u00f9ng t\u00ean file).\n"
+        "<b>3.</b> Ch\u1ecdn <b>t\u1ed1c \u0111\u1ed9 \u0111\u1ecdc</b> v\u00e0 <b>\u0111\u1ecbnh d\u1ea1ng</b> audio.\n"
+        "<b>4.</b> Ch\u1edd t\u1ea1o xong v\u00e0 nh\u1eadn link t\u1ea3i v\u1ec1. \u2728\n\n"
+        "\U0001f4c1 <i>H\u1ed7 tr\u1ee3: .txt, .epub, .pdf, .docx, .zip, .mobi\u2026</i>",
+        parse_mode="HTML",
     )
 
 
 async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
-        await update.message.reply_text("Ban khong co quyen dung bot nay.")
+        await update.message.reply_text("\U0001f6ab B\u1ea1n kh\u00f4ng c\u00f3 quy\u1ec1n s\u1eed d\u1ee5ng bot n\u00e0y.")
         return
     chat_id = update.effective_chat.id
     PENDING[chat_id] = {"step": "await_file"}
     await update.message.reply_text(
-        "Hay gui (dinh kem) file ebook can chuyen thanh audio.\n"
-        "Ho tro: .txt, .epub, .zip(txt), .mobi, .azw3, .fb2, .docx, .pdf, .html"
+        "\U0001f4ce H\u00e3y g\u1eedi (\u0111\u00ednh k\u00e8m) <b>file ebook</b> b\u1ea1n mu\u1ed1n chuy\u1ec3n th\u00e0nh audio.\n\n"
+        "<i>H\u1ed7 tr\u1ee3: .txt, .epub, .pdf, .docx, .zip, .mobi\u2026</i>",
+        parse_mode="HTML",
     )
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
-        await update.message.reply_text("Ban khong co quyen dung bot nay.")
+        await update.message.reply_text("\U0001f6ab B\u1ea1n kh\u00f4ng c\u00f3 quy\u1ec1n s\u1eed d\u1ee5ng bot n\u00e0y.")
         return
     doc = update.message.document
     name = doc.file_name or "input.txt"
     ext = os.path.splitext(name)[1].lower()
     if ext not in SUPPORTED_EXT:
         await update.message.reply_text(
-            "Dinh dang %r chua ho tro. Hay gui: %s" % (ext, ", ".join(SUPPORTED_EXT))
+            "\u26a0\ufe0f \u0110\u1ecbnh d\u1ea1ng <code>%s</code> ch\u01b0a \u0111\u01b0\u1ee3c h\u1ed7 tr\u1ee3.\n\nH\u00e3y g\u1eedi c\u00e1c \u0111\u1ecbnh d\u1ea1ng: %s"
+            % (html.escape(ext), ", ".join(SUPPORTED_EXT)),
+            parse_mode="HTML",
         )
         return
     if doc.file_size and doc.file_size > 45 * 1024 * 1024:
-        await update.message.reply_text("File qua lon (>45MB). Hay chia nho hoac nen zip.")
+        await update.message.reply_text("\u26a0\ufe0f File qu\u00e1 l\u1edbn (>45MB). H\u00e3y chia nh\u1ecf ho\u1eb7c n\u00e9n zip l\u1ea1i.")
         return
 
-    await update.message.reply_text("Da nhan file, dang tai ve...")
+    await update.message.reply_text("\U0001f4e5 \u0110\u00e3 nh\u1eadn file, \u0111ang t\u1ea3i v\u1ec1\u2026")
     tg_file = await doc.get_file()
     content = bytes(await tg_file.download_as_bytearray())
 
@@ -225,9 +231,10 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "install_calibre": "true" if ext in (".mobi", ".azw3", ".azw", ".fb2") else "false",
     }
     await update.message.reply_text(
-        "Da nhan file. TEN TRUYEN la gi? (dung de dat ten Release + file)\n"
-        "Go ten truyen, hoac /skip de dung mac dinh: %s"
-        % os.path.splitext(name)[0]
+        "\u2705 <b>\u0110\u00e3 nh\u1eadn file:</b> <code>%s</code>\n\n"
+        "\U0001f4dd <b>T\u00ean truy\u1ec7n</b> l\u00e0 g\u00ec? Nh\u1eadp t\u00ean, ho\u1eb7c g\u00f5 /skip \u0111\u1ec3 d\u00f9ng: <i>%s</i>"
+        % (html.escape(name), html.escape(os.path.splitext(name)[0])),
+        parse_mode="HTML",
     )
 
 
@@ -237,7 +244,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat.id
     state = PENDING.get(chat_id)
     if not state:
-        await query.edit_message_text("Phien da het han. Hay gui lai file.")
+        await query.edit_message_text("\u231b Phi\u00ean \u0111\u00e3 h\u1ebft h\u1ea1n. H\u00e3y g\u1eedi l\u1ea1i file ho\u1eb7c g\u00f5 /tts.")
         return
     data = query.data
 
@@ -246,16 +253,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["step"] = "await_format"
         kb = [[InlineKeyboardButton(lbl, callback_data=key)] for key, (lbl, _) in FORMAT_OPTIONS.items()]
         await query.edit_message_text(
-            "Toc do: %s. Gio chon DINH DANG audio:" % SPEED_OPTIONS[data][0],
+            "\u23f1\ufe0f T\u1ed1c \u0111\u1ed9: <b>%s</b>\n\n\U0001f3b5 Gi\u1edd ch\u1ecdn <b>\u0111\u1ecbnh d\u1ea1ng</b> audio:" % SPEED_OPTIONS[data][0],
             reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="HTML",
         )
         return
 
     if data in FORMAT_OPTIONS:
         state["format"] = FORMAT_OPTIONS[data][1]
         await query.edit_message_text(
-            "Truyen: %s\nToc do: %s  |  Dinh dang: %s\n\nBat dau tao audio..."
-            % (state["title"], state["length_scale"], FORMAT_OPTIONS[data][1])
+            "\U0001f3ac <b>Truy\u1ec7n:</b> %s\n"
+            "\u23f1\ufe0f T\u1ed1c \u0111\u1ed9: <b>%s</b>  |  \U0001f3b5 \u0110\u1ecbnh d\u1ea1ng: <b>%s</b>\n\n"
+            "\u23f3 <b>\u0110ang b\u1eaft \u0111\u1ea7u t\u1ea1o audio\u2026</b> M\u00ecnh s\u1ebd b\u00e1o khi xong nh\u00e9!"
+            % (html.escape(state["title"]), state["length_scale"], FORMAT_OPTIONS[data][1]),
+            parse_mode="HTML",
         )
         await run_job(chat_id, state, context)
         PENDING.pop(chat_id, None)
@@ -292,13 +303,15 @@ async def run_job(chat_id, state, context):
         # 2. Dispatch workflow.
         gh_dispatch_workflow(job_id, opts)
     except requests.HTTPError as e:
-        await context.bot.send_message(chat_id, "Loi khi day len GitHub: %s" % e)
+        await context.bot.send_message(chat_id, "\u274c L\u1ed7i khi \u0111\u1ea9y l\u00ean GitHub: %s" % html.escape(str(e)))
         return
 
     await context.bot.send_message(
         chat_id,
-        "Da bat dau tao audio cho truyen: %s\n(job %s dang chay tren GitHub Actions, co the vai phut...)"
-        % (state["title"], job_id),
+        "\u23f3 <b>\u0110ang t\u1ea1o audio cho truy\u1ec7n:</b> %s\n"
+        "<i>(\u0111ang ch\u1ea1y tr\u00ean GitHub Actions, c\u00f3 th\u1ec3 m\u1ea5t v\u00e0i ph\u00fat\u2026)</i>"
+        % html.escape(state["title"]),
+        parse_mode="HTML",
     )
 
     # 3. Theo doi run.
@@ -306,7 +319,7 @@ async def run_job(chat_id, state, context):
     if not run_id:
         await context.bot.send_message(
             chat_id,
-            "Da kich hoat workflow nhung chua tim thay run. Kiem tra tab Actions cua repo.",
+            "\u26a0\ufe0f \u0110\u00e3 k\u00edch ho\u1ea1t workflow nh\u01b0ng ch\u01b0a t\u00ecm th\u1ea5y run. H\u00e3y ki\u1ec3m tra tab Actions c\u1ee7a repo.",
         )
         return
     conclusion = gh_wait_run(run_id)
@@ -314,7 +327,8 @@ async def run_job(chat_id, state, context):
     if conclusion != "success":
         await context.bot.send_message(
             chat_id,
-            "Workflow ket thuc voi trang thai: %s. Xem log tai Actions." % conclusion,
+            "\u274c Workflow k\u1ebft th\u00fac v\u1edbi tr\u1ea1ng th\u00e1i: <b>%s</b>. Xem log t\u1ea1i tab Actions." % html.escape(str(conclusion)),
+            parse_mode="HTML",
         )
         return
 
@@ -322,22 +336,32 @@ async def run_job(chat_id, state, context):
     tag = "audiobook-%s" % job_id
     rel = gh_get_release(tag)
     if not rel:
-        await context.bot.send_message(chat_id, "Xong nhung chua thay Release. Thu lai sau.")
+        await context.bot.send_message(chat_id, "\u2705 Xong nh\u01b0ng ch\u01b0a th\u1ea5y Release. Th\u1eed l\u1ea1i sau nh\u00e9.")
         return
     assets = rel.get("assets", [])
-    lines = ["Truyen: %s da hoan thanh!" % state["title"], "Link nhu sau:", rel["html_url"], ""]
+    title_html = html.escape(state["title"])
+    lines = [
+        "\U0001f389 <b>Truy\u1ec7n: %s \u0111\u00e3 ho\u00e0n th\u00e0nh!</b>" % title_html,
+        "",
+        "\U0001f517 <b>Link t\u1ea3i:</b>",
+        rel["html_url"],
+    ]
+    if assets:
+        lines.append("")
+        lines.append("\U0001f4c1 <b>File:</b>")
     for a in assets:
         size_mb = a.get("size", 0) / (1024 * 1024)
-        lines.append("- %s (%.1f MB): %s" % (a["name"], size_mb, a["browser_download_url"]))
-    await context.bot.send_message(chat_id, "\n".join(lines), disable_web_page_preview=True)
+        lines.append("\u2022 <b>%s</b> (%.1f MB)\n%s" % (html.escape(a["name"]), size_mb, a["browser_download_url"]))
+    await context.bot.send_message(chat_id, "\n".join(lines), disable_web_page_preview=True, parse_mode="HTML")
 
 
 async def _ask_speed(update: Update, chat_id, state):
     state["step"] = "await_speed"
     kb = [[InlineKeyboardButton(lbl, callback_data=key)] for key, (lbl, _) in SPEED_OPTIONS.items()]
     await update.message.reply_text(
-        "Truyen: %s\nChon TOC DO doc:" % state["title"],
+        "\U0001f3ac <b>Truy\u1ec7n:</b> %s\n\n\u23f1\ufe0f Ch\u1ecdn <b>t\u1ed1c \u0111\u1ed9 \u0111\u1ecdc</b>:" % html.escape(state["title"]),
         reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="HTML",
     )
 
 
@@ -361,8 +385,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _ask_speed(update, chat_id, state)
 
 
+async def _post_init(app):
+    """Dat menu lenh goi y (hien khi go '/')."""
+    await app.bot.set_my_commands([
+        BotCommand("tts", "\U0001f3a7 T\u1ea1o audiobook t\u1eeb file ebook"),
+        BotCommand("skip", "\u23ed\ufe0f B\u1ecf qua \u0111\u1eb7t t\u00ean truy\u1ec7n"),
+        BotCommand("help", "\u2753 Xem h\u01b0\u1edbng d\u1eabn"),
+        BotCommand("start", "\U0001f44b Gi\u1edbi thi\u1ec7u bot"),
+    ])
+
+
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("tts", cmd_tts))
