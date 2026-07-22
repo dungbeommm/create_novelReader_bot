@@ -1,8 +1,14 @@
 {
-  "offset": 195557039,
+  "offset": 195557040,
   "sessions": {
     "6412935043": {
-      "step": "await_file"
+      "step": "await_title",
+      "filename": "Nhân đạo chí tôn full - thạch trư.epub",
+      "input_path": "bot/state/uploads/6412935043/Nhân đạo chí tôn full - thạch trư.epub",
+      "title": "Nhân đạo chí tôn full - thạch trư",
+      "length_scale": "1.0",
+      "format": "mp3",
+      "install_calibre": "false"
     }
   }
 }
