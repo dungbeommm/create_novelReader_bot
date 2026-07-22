@@ -162,21 +162,34 @@ def allowed(update):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Xin chao! Gui cho toi mot file ebook (.txt, .epub, .zip chua txt, "
-        ".mobi, .pdf, .docx...) va toi se tao audiobook giong Ngoc Huyen.\n\n"
-        "Sau khi gui file, ban se chon toc do doc va dinh dang audio. "
-        "Khi xong toi gui link tai tren GitHub Release.\n\n"
-        "Lenh: /help de xem huong dan."
+        "Xin chao! Toi tao audiobook giong Ngoc Huyen tu file ebook cua ban.\n\n"
+        "Go /tts de bat dau: toi se yeu cau ban tai file len, hoi TEN TRUYEN, "
+        "roi cho chon toc do doc va dinh dang audio.\n"
+        "Ban cung co the gui thang mot file ebook (.txt, .epub, .zip, .mobi, .pdf, .docx...).\n\n"
+        "Go /help de xem huong dan."
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Cach dung:\n"
-        "1. Gui file ebook (dinh kem document).\n"
-        "2. Chon toc do doc.\n"
-        "3. Chon dinh dang audio (MP3 / M4B / WAV).\n"
-        "4. Cho vai phut, toi gui link GitHub Release.\n\n"
+        "1. Go /tts -> toi yeu cau tai file, ban gui file ebook.\n"
+        "2. Toi hoi TEN TRUYEN (go ten, hoac /skip de dung mac dinh).\n"
+        "3. Chon TOC DO doc va DINH DANG audio (MP3 / M4B / WAV).\n"
+        "4. Toi bao bat dau tao audio.\n"
+        "5. Khi GitHub tao xong, toi gui tin nhan bao hoan thanh kem link tai.\n\n"
+        "Ho tro: .txt, .epub, .zip(txt), .mobi, .azw3, .fb2, .docx, .pdf, .html"
+    )
+
+
+async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        await update.message.reply_text("Ban khong co quyen dung bot nay.")
+        return
+    chat_id = update.effective_chat.id
+    PENDING[chat_id] = {"step": "await_file"}
+    await update.message.reply_text(
+        "Hay gui (dinh kem) file ebook can chuyen thanh audio.\n"
         "Ho tro: .txt, .epub, .zip(txt), .mobi, .azw3, .fb2, .docx, .pdf, .html"
     )
 
@@ -203,6 +216,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     PENDING[chat_id] = {
+        "step": "await_title",
         "filename": name,
         "content": content,
         "title": os.path.splitext(name)[0],
@@ -210,10 +224,10 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "format": "mp3",
         "install_calibre": "true" if ext in (".mobi", ".azw3", ".azw", ".fb2") else "false",
     }
-
-    kb = [[InlineKeyboardButton(lbl, callback_data=key)] for key, (lbl, _) in SPEED_OPTIONS.items()]
     await update.message.reply_text(
-        "Chon toc do doc:", reply_markup=InlineKeyboardMarkup(kb)
+        "Da nhan file. TEN TRUYEN la gi? (dung de dat ten Release + file)\n"
+        "Go ten truyen, hoac /skip de dung mac dinh: %s"
+        % os.path.splitext(name)[0]
     )
 
 
@@ -229,9 +243,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data in SPEED_OPTIONS:
         state["length_scale"] = SPEED_OPTIONS[data][1]
+        state["step"] = "await_format"
         kb = [[InlineKeyboardButton(lbl, callback_data=key)] for key, (lbl, _) in FORMAT_OPTIONS.items()]
         await query.edit_message_text(
-            "Toc do: %s. Gio chon dinh dang audio:" % SPEED_OPTIONS[data][0],
+            "Toc do: %s. Gio chon DINH DANG audio:" % SPEED_OPTIONS[data][0],
             reply_markup=InlineKeyboardMarkup(kb),
         )
         return
@@ -239,8 +254,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data in FORMAT_OPTIONS:
         state["format"] = FORMAT_OPTIONS[data][1]
         await query.edit_message_text(
-            "Dinh dang: %s. Dang day file len GitHub va bat dau xu ly..."
-            % FORMAT_OPTIONS[data][0]
+            "Truyen: %s\nToc do: %s  |  Dinh dang: %s\n\nBat dau tao audio..."
+            % (state["title"], state["length_scale"], FORMAT_OPTIONS[data][1])
         )
         await run_job(chat_id, state, context)
         PENDING.pop(chat_id, None)
@@ -282,9 +297,8 @@ async def run_job(chat_id, state, context):
 
     await context.bot.send_message(
         chat_id,
-        "Da tao job `%s` va kich hoat GitHub Actions.\nDang cho tao audio (co the vai phut)..."
-        % job_id,
-        parse_mode="Markdown",
+        "Da bat dau tao audio cho truyen: %s\n(job %s dang chay tren GitHub Actions, co the vai phut...)"
+        % (state["title"], job_id),
     )
 
     # 3. Theo doi run.
@@ -311,18 +325,50 @@ async def run_job(chat_id, state, context):
         await context.bot.send_message(chat_id, "Xong nhung chua thay Release. Thu lai sau.")
         return
     assets = rel.get("assets", [])
-    lines = ["Hoan tat! Audiobook cua ban:", rel["html_url"], ""]
+    lines = ["Truyen: %s da hoan thanh!" % state["title"], "Link nhu sau:", rel["html_url"], ""]
     for a in assets:
         size_mb = a.get("size", 0) / (1024 * 1024)
         lines.append("- %s (%.1f MB): %s" % (a["name"], size_mb, a["browser_download_url"]))
     await context.bot.send_message(chat_id, "\n".join(lines), disable_web_page_preview=True)
 
 
+async def _ask_speed(update: Update, chat_id, state):
+    state["step"] = "await_speed"
+    kb = [[InlineKeyboardButton(lbl, callback_data=key)] for key, (lbl, _) in SPEED_OPTIONS.items()]
+    await update.message.reply_text(
+        "Truyen: %s\nChon TOC DO doc:" % state["title"],
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+
+
+async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    state = PENDING.get(chat_id)
+    if not state or state.get("step") != "await_title":
+        return
+    await _ask_speed(update, chat_id, state)
+
+
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Nhan van ban khi bot dang cho TEN TRUYEN."""
+    chat_id = update.effective_chat.id
+    state = PENDING.get(chat_id)
+    if not state or state.get("step") != "await_title":
+        return
+    title = (update.message.text or "").strip()
+    if title:
+        state["title"] = title
+    await _ask_speed(update, chat_id, state)
+
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("tts", cmd_tts))
+    app.add_handler(CommandHandler("skip", cmd_skip))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(CallbackQueryHandler(on_callback))
     print("Bot dang chay...", flush=True)
     app.run_polling()
