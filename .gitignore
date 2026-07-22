@@ -1,32 +1,10 @@
-# Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
-build/
-dist/
+*.pyc
 .venv/
 venv/
 .env
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Runtime working directories
-work/
-out/
-tmp/
-.cache/
-state/
-*.log
-
-# Audio / model artifacts (voices are large; keep them out of git by default)
-models/**/*.onnx
-models/**/*.onnx.json
-!models/**/.gitkeep
-
-# OS
-.DS_Store
-Thumbs.db
+bot/.env
+*.wav
+work_audio/
+chapters/
+release/

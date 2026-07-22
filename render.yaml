@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: piper-tts-ngochuyen
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free

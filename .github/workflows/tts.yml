@@ -1,0 +1,65 @@
+name: Text to Speech (Piper - Ngoc Huyen)
+
+# Chay thu cong tu tab Actions, nhap van ban -> nhan file audio.
+on:
+  workflow_dispatch:
+    inputs:
+      text:
+        description: "Van ban tieng Viet can chuyen thanh giong noi"
+        required: true
+        default: "Xin chao, day la giong noi tieng Viet duoc tao tu Piper."
+      filename:
+        description: "Ten file output (khong can duoi .wav)"
+        required: false
+        default: "output"
+      length_scale:
+        description: "Toc do doc (lon hon = cham hon, mac dinh 1.0)"
+        required: false
+        default: "1.0"
+      make_release:
+        description: "Tao GitHub Release de co link tai co dinh? (true/false)"
+        required: false
+        default: "true"
+
+jobs:
+  tts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # can de tao Release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Cai espeak-ng
+        run: sudo apt-get update && sudo apt-get install -y espeak-ng
+
+      - name: Cai dependencies
+        run: pip install -r requirements.txt
+
+      - name: Tao giong noi
+        env:
+          TTS_TEXT: ${{ github.event.inputs.text }}
+          FNAME: ${{ github.event.inputs.filename }}
+          LENGTH: ${{ github.event.inputs.length_scale }}
+        run: |
+          python synth.py --text "$TTS_TEXT" --length-scale "$LENGTH" --out "$FNAME.wav"
+
+      - name: Tai file audio len artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.filename }}-audio
+          path: ${{ github.event.inputs.filename }}.wav
+          retention-days: 30
+
+      - name: Tao Release (co link tai co dinh)
+        if: ${{ github.event.inputs.make_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tts-${{ github.run_number }}
+          name: TTS ${{ github.event.inputs.filename }} #${{ github.run_number }}
+          files: ${{ github.event.inputs.filename }}.wav

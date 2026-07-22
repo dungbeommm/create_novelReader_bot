@@ -1,0 +1,158 @@
+name: Ebook to Audiobook (Piper - Ngoc Huyen)
+
+# Nhan mot file ebook trong thu muc jobs/<job_id>/ -> tach chuong -> Piper TTS
+# -> dong goi -> tao GitHub Release co link tai co dinh.
+#
+# Kich hoat theo 2 cach:
+#   1) workflow_dispatch: bot/nguoi dung nhap job_id (thu muc jobs/<job_id> da co san).
+#   2) push: khi co file moi duoc commit vao jobs/** (tu dong lay job moi nhat).
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Ten thu muc job trong jobs/ (vi du: 20260722-abcd)"
+        required: true
+      title:
+        description: "Ten truyen (dat ten Release + file)"
+        required: false
+        default: ""
+      format:
+        description: "Dinh dang audio: mp3 / wav / m4b / ogg / opus"
+        required: false
+        default: "mp3"
+      length_scale:
+        description: "Toc do doc (lon hon = cham hon, mac dinh 1.0)"
+        required: false
+        default: "1.0"
+      package:
+        description: "Dong goi: auto / zip / single / files"
+        required: false
+        default: "auto"
+      max_chars:
+        description: "Chia nho chuong dai hon N ky tu (0 = khong chia)"
+        required: false
+        default: "0"
+      install_calibre:
+        description: "Cai calibre de doc mobi/azw3/fb2? (true/false)"
+        required: false
+        default: "false"
+  push:
+    paths:
+      - "jobs/**"
+
+permissions:
+  contents: write   # can de commit cleanup + tao Release
+
+jobs:
+  audiobook:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Xac dinh job_id
+        id: resolve
+        run: |
+          set -e
+          if [ -n "${{ github.event.inputs.job_id }}" ]; then
+            JOB_ID="${{ github.event.inputs.job_id }}"
+          else
+            # Push trigger: lay thu muc job moi nhat trong jobs/
+            JOB_ID=$(ls -1dt jobs/*/ 2>/dev/null | head -n1 | xargs -n1 basename)
+          fi
+          if [ -z "$JOB_ID" ] || [ ! -d "jobs/$JOB_ID" ]; then
+            echo "Khong tim thay thu muc job hop le." >&2
+            exit 1
+          fi
+          echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
+          echo "Job: $JOB_ID"
+          # Tim file ebook dau vao (file khong phai job.json).
+          INPUT=$(find "jobs/$JOB_ID" -maxdepth 1 -type f ! -name 'job.json' | head -n1)
+          echo "input=$INPUT" >> "$GITHUB_OUTPUT"
+          echo "Input file: $INPUT"
+
+      - name: Doc option tu job.json (neu co)
+        id: opts
+        run: |
+          JOB_DIR="jobs/${{ steps.resolve.outputs.job_id }}"
+          JQ() { jq -r "$1 // empty" "$JOB_DIR/job.json" 2>/dev/null; }
+          if [ -f "$JOB_DIR/job.json" ]; then
+            TITLE=$(JQ '.title'); FORMAT=$(JQ '.format'); LEN=$(JQ '.length_scale')
+            PKG=$(JQ '.package'); MAXC=$(JQ '.max_chars'); CAL=$(JQ '.install_calibre')
+          fi
+          echo "title=${TITLE:-${{ github.event.inputs.title }}}" >> "$GITHUB_OUTPUT"
+          echo "format=${FORMAT:-${{ github.event.inputs.format }}}" >> "$GITHUB_OUTPUT"
+          echo "length_scale=${LEN:-${{ github.event.inputs.length_scale }}}" >> "$GITHUB_OUTPUT"
+          echo "package=${PKG:-${{ github.event.inputs.package }}}" >> "$GITHUB_OUTPUT"
+          echo "max_chars=${MAXC:-${{ github.event.inputs.max_chars }}}" >> "$GITHUB_OUTPUT"
+          echo "install_calibre=${CAL:-${{ github.event.inputs.install_calibre }}}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Cai goi he thong (espeak-ng, ffmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y espeak-ng ffmpeg poppler-utils
+
+      - name: Cai calibre (tuy chon, cho mobi/azw3/fb2)
+        if: ${{ steps.opts.outputs.install_calibre == 'true' }}
+        run: sudo apt-get install -y calibre
+
+      - name: Cai Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r pipeline/requirements-pipeline.txt
+
+      - name: Tach chuong tu ebook
+        run: |
+          python pipeline/parse_ebook.py \
+            --input "${{ steps.resolve.outputs.input }}" \
+            --out-dir chapters \
+            --max-chars "${{ steps.opts.outputs.max_chars }}"
+
+      - name: Tao audio theo chuong (Piper)
+        run: |
+          python pipeline/batch_tts.py \
+            --chapters-dir chapters \
+            --out-dir release \
+            --title "${{ steps.opts.outputs.title }}" \
+            --format "${{ steps.opts.outputs.format }}" \
+            --length-scale "${{ steps.opts.outputs.length_scale }}" \
+            --package "${{ steps.opts.outputs.package }}"
+
+      - name: Tai audio len artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: audiobook-${{ steps.resolve.outputs.job_id }}
+          path: release/*
+          retention-days: 30
+
+      - name: Tao GitHub Release (link tai co dinh)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: audiobook-${{ steps.resolve.outputs.job_id }}
+          name: "Audiobook ${{ steps.opts.outputs.title }} (#${{ github.run_number }})"
+          body_path: release/summary.json
+          files: |
+            release/*.mp3
+            release/*.wav
+            release/*.m4b
+            release/*.ogg
+            release/*.opus
+            release/*.zip
+
+      - name: Don dep file job (tranh phinh repo)
+        if: ${{ success() }}
+        run: |
+          JOB_DIR="jobs/${{ steps.resolve.outputs.job_id }}"
+          if [ -d "$JOB_DIR" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git rm -r --quiet "$JOB_DIR" || true
+            git commit -m "cleanup: xoa job ${{ steps.resolve.outputs.job_id }}" || true
+            git push || true
+          fi
