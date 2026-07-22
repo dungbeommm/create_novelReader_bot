@@ -1,8 +1,8 @@
 {
-  "offset": 195557036,
+  "offset": 195557037,
   "sessions": {
     "6412935043": {
-      "step": "await_speed",
+      "step": "await_format",
       "filename": "chuong1.txt",
       "input_path": "bot/state/uploads/6412935043/chuong1.txt",
       "title": "Tạo Hóa Chi Vương",
