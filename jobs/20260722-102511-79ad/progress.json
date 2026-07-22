@@ -6,7 +6,7 @@
   "requested_start": 1,
   "final_chapter": 1000,
   "total_book_chapters": 4100,
-  "next_chapter": 471,
+  "next_chapter": 481,
   "batch_size": 10,
   "completed_batches": [
     {
@@ -243,6 +243,11 @@
       "start": 461,
       "end": 470,
       "asset": "20260722-102511-79ad_chapters_461-470.zip"
+    },
+    {
+      "start": 471,
+      "end": 480,
+      "asset": "20260722-102511-79ad_chapters_471-480.zip"
     }
   ],
   "status": "processing",
