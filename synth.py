@@ -56,12 +56,14 @@ def main():
 
     print(f"Dang tao giong noi ({len(text)} ky tu)...", flush=True)
 
-    # Ho tro ca API moi (piper-tts >= 1.3) va cu (1.2.x)
+    # Uu tien API 1.2 vi API nay nhan cac tham so inference.
     with wave.open(args.out, "wb") as wav_file:
-        if hasattr(voice, "synthesize_wav"):
-            voice.synthesize_wav(text, wav_file)
-        else:
+        if hasattr(voice, "synthesize"):
             voice.synthesize(text, wav_file, **kwargs)
+        elif kwargs:
+            raise RuntimeError("Phien ban Piper nay khong ho tro tuy chinh inference")
+        else:
+            voice.synthesize_wav(text, wav_file)
 
     size = os.path.getsize(args.out)
     print(f"Hoan tat! Da ghi {args.out} ({size} bytes)", flush=True)

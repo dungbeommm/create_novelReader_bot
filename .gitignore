@@ -1,10 +1,12 @@
 __pycache__/
-*.pyc
+*.py[cod]
 .venv/
 venv/
 .env
-bot/.env
 *.wav
-work_audio/
+bot/state/uploads/
+bot/state/work/
+bot/state/*.tmp
 chapters/
 release/
+work_audio/

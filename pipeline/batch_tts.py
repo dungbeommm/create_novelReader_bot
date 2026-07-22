@@ -20,6 +20,7 @@ Vi du:
         --title "Ten Truyen" --format mp3 --length-scale 1.0 --package zip
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -53,13 +54,12 @@ def synth_to_wav(voice, text, out_wav, length_scale=None, noise_scale=None, nois
         kwargs["noise_w"] = noise_w
     with wave.open(out_wav, "wb") as wav_file:
         # Ho tro ca API moi (>=1.3) va cu (1.2.x).
-        if hasattr(voice, "synthesize_wav") and not kwargs:
-            voice.synthesize_wav(text, wav_file)
+        if hasattr(voice, "synthesize"):
+            voice.synthesize(text, wav_file, **kwargs)
+        elif kwargs:
+            raise RuntimeError("Phien ban Piper nay khong ho tro tuy chinh inference")
         else:
-            try:
-                voice.synthesize(text, wav_file, **kwargs)
-            except TypeError:
-                voice.synthesize_wav(text, wav_file)
+            voice.synthesize_wav(text, wav_file)
 
 
 # --- helper moi: chia nho van ban + gom WAV (chong tran bo nho voi chuong dai) ---
@@ -249,6 +249,9 @@ def main():
     ap.add_argument("--title", default=None, help="Ten truyen")
     ap.add_argument("--format", default=None, choices=["mp3", "wav", "m4b", "ogg", "opus", "m4a"])
     ap.add_argument("--package", default=None, choices=["auto", "zip", "single", "files"])
+    ap.add_argument("--batch-size", type=int,
+                    default=int(os.environ.get("TTS_BATCH_SIZE", "0") or "0"),
+                    help="Lam ca bo: chia thanh nhieu zip, moi zip toi da N chuong (0 = 1 zip)")
     ap.add_argument("--length-scale", type=float, default=None)
     ap.add_argument("--noise-scale", type=float, default=None)
     ap.add_argument("--noise-w", type=float, default=None)
@@ -266,6 +269,7 @@ def main():
     title = pick(args.title, opts, "title", "audiobook")
     fmt = pick(args.format, opts, "format", "mp3")
     package = pick(args.package, opts, "package", "auto")
+    batch_size = args.batch_size or 0
     length_scale = pick(args.length_scale, opts, "length_scale", None)
     if length_scale is not None:
         length_scale = float(length_scale)
@@ -306,11 +310,6 @@ def main():
         stem = os.path.splitext(m["file"])[0]
         out_path = os.path.join(args.out_dir, stem + "." + per_chapter_fmt)
 
-        # Resume: chuong da co file audio thi bo qua (khong lam lai).
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            done += 1
-            continue
-
         # Ngan sach thoi gian: dung truoc khi runner bi kill, giu lai tien do.
         if budget > 0 and (time.time() - start_ts) >= budget:
             stopped_early = True
@@ -331,12 +330,29 @@ def main():
             done += 1
             continue
 
+        fingerprint = hashlib.sha256(json.dumps({
+            "text": text, "format": per_chapter_fmt,
+            "length_scale": length_scale, "noise_scale": noise_scale,
+            "noise_w": noise_w,
+        }, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        fingerprint_path = out_path + ".sha256"
+        old_fingerprint = ""
+        if os.path.isfile(fingerprint_path):
+            with open(fingerprint_path, "r", encoding="ascii") as f:
+                old_fingerprint = f.read().strip()
+        if (old_fingerprint == fingerprint and os.path.exists(out_path)
+                and os.path.getsize(out_path) > 0):
+            done += 1
+            continue
+
         wav_path = os.path.join(args.work_dir, stem + ".wav")
         print("[%d/%d] TTS: %s (%d ky tu)"
               % (idx, total, m["title"][:40], len(text)), flush=True)
         synth_chapter(voice, text, wav_path, args.work_dir, args.chunk_chars,
                       length_scale, noise_scale, noise_w)
         convert_audio(wav_path, out_path, per_chapter_fmt)
+        with open(fingerprint_path, "w", encoding="ascii") as f:
+            f.write(fingerprint)
         try:
             os.remove(wav_path)
         except OSError:
@@ -345,10 +361,15 @@ def main():
         done += 1
 
     # Tat ca file chuong hien co trong out-dir.
-    chapter_files = sorted(
-        os.path.join(args.out_dir, f) for f in os.listdir(args.out_dir)
-        if f.lower().endswith("." + per_chapter_fmt)
-    )
+    chapter_entries = []
+    for m in manifest:
+        if m["title"].strip().lower() in SKIP_TITLES:
+            continue
+        stem = os.path.splitext(m["file"])[0]
+        path = os.path.join(args.out_dir, stem + "." + per_chapter_fmt)
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            chapter_entries.append((path, m["title"]))
+    chapter_files = [entry[0] for entry in chapter_entries]
     if not chapter_files:
         print("Loi: khong tao duoc audio nao", file=sys.stderr)
         sys.exit(3)
@@ -373,7 +394,7 @@ def main():
     # ---- Da xong toan bo: dong goi ket qua ----
     final_artifacts = []
     if fmt == "m4b":
-        titles = [m["title"] for m in manifest][:len(chapter_files)]
+        titles = [entry[1] for entry in chapter_entries]
         out_path = os.path.join(args.out_dir, title_slug + ".m4b")
         print("Dang gop %d chuong thanh m4b..." % len(chapter_files), flush=True)
         build_m4b(chapter_files, titles, out_path, title)
@@ -381,7 +402,30 @@ def main():
     else:
         multiple = len(chapter_files) > 1
         want_zip = package == "zip" or (package == "auto" and multiple)
-        if want_zip:
+        if want_zip and batch_size and batch_size > 0 and len(chapter_files) > batch_size:
+            # Lam ca bo: chia thanh nhieu zip, moi zip toi da batch_size chuong.
+            n = len(chapter_files)
+            for s0 in range(0, n, batch_size):
+                group = chapter_files[s0:s0 + batch_size]
+                a, b = s0 + 1, s0 + len(group)
+                zip_path = os.path.join(
+                    args.out_dir, "%s_chuong_%03d-%03d.zip" % (title_slug, a, b))
+                print("Dang nen chuong %d-%d thanh zip (%d file)..."
+                      % (a, b, len(group)), flush=True)
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for fp in group:
+                        zf.write(fp, os.path.basename(fp))
+                final_artifacts.append(zip_path)
+            for fp in chapter_files:
+                try:
+                    os.remove(fp)
+                except OSError:
+                    pass
+                try:
+                    os.remove(fp + ".sha256")
+                except OSError:
+                    pass
+        elif want_zip:
             zip_path = os.path.join(args.out_dir, title_slug + ".zip")
             print("Dang nen %d file thanh zip..." % len(chapter_files), flush=True)
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -390,6 +434,10 @@ def main():
             for fp in chapter_files:
                 try:
                     os.remove(fp)
+                except OSError:
+                    pass
+                try:
+                    os.remove(fp + ".sha256")
                 except OSError:
                     pass
             final_artifacts.append(zip_path)
@@ -401,6 +449,7 @@ def main():
         "chapters": len(chapter_files),
         "format": fmt,
         "package": package,
+        "batch_size": batch_size,
         "done": True,
         "artifacts": [os.path.basename(p) for p in final_artifacts],
     }

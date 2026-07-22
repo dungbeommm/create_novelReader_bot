@@ -77,6 +77,9 @@ FORMAT_OPTIONS = {
 # Cac muc chon nhanh so chuong (chi hien nhung muc nho hon tong so chuong).
 CHAPTER_QUICK = (10, 20, 50, 100)
 
+# Khi chon "Tat ca" (ca bo): moi 20 chuong dong thanh 1 zip rieng roi gui.
+BATCH_SIZE_ALL = 20
+
 
 def probe_chapters(path):
     """Chay parse_ebook.py --probe de DEM so chuong. Loi -> None (bo qua hoi)."""
@@ -210,9 +213,11 @@ def create_release_with_assets(tag, name, body, files):
         base + "/releases",
         headers=GH_HEADERS,
         json={"tag_name": tag, "name": name, "body": body[:5000]},
+        timeout=60,
     )
     if r.status_code not in (200, 201):
-        r = requests.get(base + "/releases/tags/" + tag, headers=GH_HEADERS)
+        r = requests.get(base + "/releases/tags/" + tag, headers=GH_HEADERS, timeout=30)
+    r.raise_for_status()
     rel = r.json()
     upload_url = rel.get("upload_url", "").split("{")[0]
     for fp in files:
@@ -220,9 +225,12 @@ def create_release_with_assets(tag, name, body, files):
             data = f.read()
         uh = dict(GH_HEADERS)
         uh["Content-Type"] = "application/octet-stream"
-        requests.post(upload_url, headers=uh, params={"name": os.path.basename(fp)}, data=data)
+        upload = requests.post(upload_url, headers=uh,
+                               params={"name": os.path.basename(fp)}, data=data,
+                               timeout=300)
+        upload.raise_for_status()
     # Lay lai release de co danh sach assets day du.
-    r2 = requests.get(base + "/releases/tags/" + tag, headers=GH_HEADERS)
+    r2 = requests.get(base + "/releases/tags/" + tag, headers=GH_HEADERS, timeout=30)
     return r2.json() if r2.status_code == 200 else rel
 
 
@@ -263,7 +271,8 @@ def handle_message(msg, state):
     # --- Document ---
     if "document" in msg:
         doc = msg["document"]
-        name = doc.get("file_name") or "input.txt"
+        name = os.path.basename((doc.get("file_name") or "input.txt").replace("\\", "/"))
+        name = re.sub(r"[^\w.() -]", "_", name, flags=re.UNICODE)[:180] or "input.txt"
         ext = os.path.splitext(name)[1].lower()
         if ext not in SUPPORTED_EXT:
             send(chat_id, "\u26a0\ufe0f \u0110\u1ecbnh d\u1ea1ng <code>%s</code> ch\u01b0a \u0111\u01b0\u1ee3c h\u1ed7 tr\u1ee3.\n\nH\u00e3y g\u1eedi c\u00e1c \u0111\u1ecbnh d\u1ea1ng: %s"
@@ -289,6 +298,7 @@ def handle_message(msg, state):
             "install_calibre": "true" if ext in CALIBRE_EXT else "false",
             "start": "1",
             "limit": "0",
+            "batch_size": "0",
         }
         send(chat_id,
              "\u2705 <b>\u0110\u00e3 nh\u1eadn file:</b> <code>%s</code>\n\n"
@@ -336,6 +346,7 @@ def handle_message(msg, state):
             return
         start, limit = parsed
         sess["start"], sess["limit"] = str(start), str(limit)
+        sess["batch_size"] = str(BATCH_SIZE_ALL) if limit == 0 else "0"
         ask_title(chat_id, sess)
         return
 
@@ -389,9 +400,11 @@ def handle_callback(cb, state):
         total = int(sess.get("chapters_total", 0))
         if choice == "all":
             sess["start"], sess["limit"] = "1", "0"
+            sess["batch_size"] = str(BATCH_SIZE_ALL)
             label = "T\u1ea5t c\u1ea3 (%d ch\u01b0\u01a1ng)" % total
         else:
             sess["start"], sess["limit"] = "1", choice
+            sess["batch_size"] = "0"
             label = "%s ch\u01b0\u01a1ng \u0111\u1ea7u" % choice
         edit(chat_id, message_id,
              "\U0001f4da S\u1ed1 ch\u01b0\u01a1ng: <b>%s</b>" % html.escape(label))
@@ -450,7 +463,8 @@ def process_ready_job(skey, sess):
             [PY, os.path.join(REPO_ROOT, "pipeline", "batch_tts.py"),
              "--chapters-dir", chapters, "--out-dir", release,
              "--title", sess["title"], "--format", sess["format"],
-             "--length-scale", str(sess["length_scale"]), "--package", "auto"],
+             "--length-scale", str(sess["length_scale"]), "--package", "auto",
+             "--batch-size", str(sess.get("batch_size", "0"))],
             check=True, cwd=REPO_ROOT,
         )
     except subprocess.CalledProcessError as e:
@@ -524,9 +538,9 @@ def poll_once(state, long_poll=False):
 
 
 def git_persist(message):
-    """Commit + push thu muc bot/state de lan chay ke tiep tiep quan lien mach."""
+    """Persist conversation metadata only; never commit uploaded books."""
     try:
-        subprocess.run(["git", "add", "bot/state"], cwd=REPO_ROOT, check=False)
+        subprocess.run(["git", "add", "bot/state/state.json"], cwd=REPO_ROOT, check=False)
         staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO_ROOT)
         if staged.returncode != 0:
             subprocess.run(["git", "commit", "-m", message], cwd=REPO_ROOT, check=False)
@@ -543,6 +557,12 @@ def main():
     except Exception:  # noqa
         pass
     state = load_state()
+    # Uploads are intentionally not committed. Drop stale sessions after a
+    # runner restart instead of retaining references to missing/private files.
+    for skey in list(state.get("sessions", {})):
+        rel = state["sessions"][skey].get("input_path")
+        if rel and not os.path.isfile(os.path.join(REPO_ROOT, rel)):
+            state["sessions"].pop(skey, None)
 
     if not loop:
         # Che do 1 luot (dung cho cron ngat quang).

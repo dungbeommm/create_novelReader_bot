@@ -78,10 +78,10 @@ def gh_put_file(path, content_bytes, message):
         "branch": GH_BRANCH,
     }
     # Neu file da ton tai -> can sha de ghi de.
-    r = requests.get(url, headers=GH_HEADERS, params={"ref": GH_BRANCH})
+    r = requests.get(url, headers=GH_HEADERS, params={"ref": GH_BRANCH}, timeout=30)
     if r.status_code == 200:
         data["sha"] = r.json()["sha"]
-    resp = requests.put(url, headers=GH_HEADERS, json=data)
+    resp = requests.put(url, headers=GH_HEADERS, json=data, timeout=60)
     resp.raise_for_status()
     return resp.json()
 
@@ -100,10 +100,11 @@ def gh_dispatch_workflow(job_id, opts):
             "max_chars": str(opts.get("max_chars", "0")),
             "start": str(opts.get("start", "1")),
             "limit": str(opts.get("limit", "0")),
+            "batch_size": str(opts.get("batch_size", "0")),
             "install_calibre": str(opts.get("install_calibre", "false")).lower(),
         },
     }
-    resp = requests.post(url, headers=GH_HEADERS, json=payload)
+    resp = requests.post(url, headers=GH_HEADERS, json=payload, timeout=30)
     resp.raise_for_status()
 
 
@@ -112,10 +113,11 @@ def gh_find_run(job_id, since_iso, timeout=60):
     url = "%s/repos/%s/actions/workflows/%s/runs" % (GH_API, GH_REPO, WORKFLOW_FILE)
     deadline = time.time() + timeout
     while time.time() < deadline:
-        r = requests.get(url, headers=GH_HEADERS, params={"branch": GH_BRANCH, "per_page": 10})
+        r = requests.get(url, headers=GH_HEADERS, params={"branch": GH_BRANCH, "per_page": 20}, timeout=30)
         if r.status_code == 200:
             for run in r.json().get("workflow_runs", []):
-                if run["created_at"] >= since_iso:
+                label = "%s %s" % (run.get("name", ""), run.get("display_title", ""))
+                if run["created_at"] >= since_iso and job_id in label:
                     return run["id"]
         time.sleep(3)
     return None
@@ -126,7 +128,7 @@ def gh_wait_run(run_id, timeout=3600):
     url = "%s/repos/%s/actions/runs/%s" % (GH_API, GH_REPO, run_id)
     deadline = time.time() + timeout
     while time.time() < deadline:
-        r = requests.get(url, headers=GH_HEADERS)
+        r = requests.get(url, headers=GH_HEADERS, timeout=30)
         if r.status_code == 200:
             run = r.json()
             if run["status"] == "completed":
@@ -137,7 +139,7 @@ def gh_wait_run(run_id, timeout=3600):
 
 def gh_get_release(tag):
     url = "%s/repos/%s/releases/tags/%s" % (GH_API, GH_REPO, tag)
-    r = requests.get(url, headers=GH_HEADERS)
+    r = requests.get(url, headers=GH_HEADERS, timeout=30)
     if r.status_code == 200:
         return r.json()
     return None
@@ -162,6 +164,9 @@ FORMAT_OPTIONS = {
 
 # Cac muc chon nhanh so chuong (chi hien nhung muc nho hon tong so chuong).
 CHAPTER_QUICK = (10, 20, 50, 100)
+
+# Khi chon "Tat ca" (ca bo): moi 20 chuong dong thanh 1 zip rieng roi gui.
+BATCH_SIZE_ALL = 20
 
 
 def _probe_chapters_blocking(content, filename):
@@ -282,7 +287,8 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\U0001f6ab B\u1ea1n kh\u00f4ng c\u00f3 quy\u1ec1n s\u1eed d\u1ee5ng bot n\u00e0y.")
         return
     doc = update.message.document
-    name = doc.file_name or "input.txt"
+    name = os.path.basename((doc.file_name or "input.txt").replace("\\", "/"))
+    name = re.sub(r"[^\w.() -]", "_", name, flags=re.UNICODE)[:180] or "input.txt"
     ext = os.path.splitext(name)[1].lower()
     if ext not in SUPPORTED_EXT:
         await update.message.reply_text(
@@ -310,6 +316,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "install_calibre": "true" if ext in (".mobi", ".azw3", ".azw", ".fb2") else "false",
         "start": "1",
         "limit": "0",
+        "batch_size": "0",
     }
     PENDING[chat_id] = state
     await update.message.reply_text(
@@ -354,9 +361,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = int(state.get("chapters_total", 0))
         if choice == "all":
             state["start"], state["limit"] = "1", "0"
+            state["batch_size"] = str(BATCH_SIZE_ALL)
             label = "T\u1ea5t c\u1ea3 (%d ch\u01b0\u01a1ng)" % total
         else:
             state["start"], state["limit"] = "1", choice
+            state["batch_size"] = "0"
             label = "%s ch\u01b0\u01a1ng \u0111\u1ea7u" % choice
         await query.edit_message_text(
             "\U0001f4da S\u1ed1 ch\u01b0\u01a1ng: <b>%s</b>" % html.escape(label),
@@ -393,6 +402,7 @@ async def run_job(chat_id, state, context):
         "max_chars": "0",
         "start": state.get("start", "1"),
         "limit": state.get("limit", "0"),
+        "batch_size": state.get("batch_size", "0"),
         "install_calibre": state["install_calibre"],
     }
 
@@ -523,6 +533,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         state["start"], state["limit"] = str(parsed[0]), str(parsed[1])
+        state["batch_size"] = str(BATCH_SIZE_ALL) if parsed[1] == 0 else "0"
         await _ask_title(chat_id, state, context)
         return
 

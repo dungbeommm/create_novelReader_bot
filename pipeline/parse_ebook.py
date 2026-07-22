@@ -26,6 +26,10 @@ import sys
 import tempfile
 import unicodedata
 import zipfile
+import posixpath
+import xml.etree.ElementTree as ET
+from collections import Counter
+from urllib.parse import unquote
 
 # ------------------------------------------------------------------ helpers
 
@@ -38,61 +42,37 @@ CHAPTER_PATTERNS = [
 ]
 CHAPTER_RE = re.compile("|".join("(?:%s)" % p for p in CHAPTER_PATTERNS), re.IGNORECASE)
 
-# Tu khoa nhan dien phan MUC LUC (table of contents) - da bo dau, chu thuong.
-TOC_KEYWORDS = (
-    "muc luc",
-    "table of contents",
-    "danh sach chuong",
-    "danh muc chuong",
-    "muc luc chuong",
+# More permissive matcher used for ebook block-level parsing. Real-world books
+# frequently put chapter titles in <p> elements and use values such as 93+1.
+EBOOK_CHAPTER_RE = re.compile(
+    r"^\s*((?:chương|chuong|hồi|hoi|phần|phan|quyển|quyen|tập|tap|"
+    r"chapter|part|section|episode)\s+"
+    r"\d+(?:\s*[+./-]\s*\d+)*"
+    r"(?:(?:\s*[:.\-–—]\s*|\s+)[^\r\n]{0,300})?)",
+    re.IGNORECASE,
+)
+ROMAN_CHAPTER_RE = re.compile(
+    r"^\s*((?i:chương|chuong|hồi|hoi|phần|phan|quyển|quyen|tập|tap|"
+    r"chapter|part|section|episode)\s+[IVXLCDM]+"
+    r"(?:(?:\s*[:.\-–—]\s*|\s+)[^\r\n]{0,300})?)\s*$"
 )
 
-
-def _strip_accents_lower(s):
-    """Bo dau tieng Viet + ha chu thuong (de so khop tu khoa muc luc)."""
-    nfkd = unicodedata.normalize("NFKD", s or "")
-    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
-
-
-def looks_like_toc(title, text):
-    """Doan xem mot 'chuong' co thuc chat la MUC LUC hay khong.
-
-    Hai dau hieu:
-      1. Co tu khoa 'Muc Luc' / 'Table of Contents' o tieu de hoac dau noi dung.
-      2. Noi dung chu yeu la MOT DANH SACH cac dong tieu de chuong (dong ngan,
-         phan lon khop mau 'Chuong N: ...'), rat it van xuoi thuc su.
-    """
-    head = (text or "").strip()[:400]
-    hay = _strip_accents_lower((title or "") + "\n" + head)
-    for kw in TOC_KEYWORDS:
-        if kw in hay:
-            return True
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    if len(lines) >= 10:
-        heading_lines = sum(1 for ln in lines if CHAPTER_RE.match(ln))
-        ratio = heading_lines / len(lines)
-        avg_len = sum(len(ln) for ln in lines) / len(lines)
-        # Muc luc: nhieu dong tieu de, chiem da so, va cac dong deu ngan.
-        if heading_lines >= 10 and ratio >= 0.6 and avg_len < 90:
-            return True
-    return False
-
-
-def drop_toc_chapters(chapters):
-    """Loai bo cac chuong thuc chat la MUC LUC (thuong nam o dau truyen).
-
-    An toan: neu lo tay loai het (khong con chuong nao) thi giu nguyen ban dau.
-    """
-    kept = []
-    for c in chapters:
-        if looks_like_toc(c.get("title", ""), c.get("text", "")):
-            print(
-                "[info] Bo qua phan Muc Luc: %r" % (c.get("title", "")[:60]),
-                file=sys.stderr,
-            )
-            continue
-        kept.append(c)
-    return kept or chapters
+URL_RE = re.compile(
+    r"(?i)(?:https?://|www\.)[^\s<>\]\[(){}]+|"
+    r"\b(?:[a-z0-9-]+\.)+(?:com|net|org|vn|io|me|info)(?:/[^\s<>]*)?"
+)
+STRONG_NOISE_RE = re.compile(
+    r"(?i)(?:\bdtv[\s-]*ebook\b|\bdocument outline\b|"
+    r"truyện\s+(?:được\s+)?dịch\s+bởi|(?:convert|converted|biên tập|đóng gói)\s+bởi|"
+    r"\b(?:kb|liên hệ)\s+zalo\b|\bzalo\s*[:：]?\s*\d|"
+    r"\bmua\s+(?:truyện|full|list)\b|\bfull\s+list\b|"
+    r"\b\d+\s*(?:k|nghìn)\s*(?:1|một)\s*bộ\b|"
+    r"\b(?:facebook|telegram)\s*[:：]\s*[@\w])"
+)
+TITLE_AD_CUT_RE = re.compile(
+    r"(?i)\s*(?:--+|——+|–{2,})\s*(?=(?:mình\s+có|zalo|mua|bán|full|liên hệ|kb\s+zalo))"
+)
+LAST_CLEAN_REPORT = {}
 
 
 def slugify(text, max_len=40):
@@ -116,6 +96,182 @@ def read_text_file(path):
             continue
     with open(path, "rb") as f:
         return f.read().decode("utf-8", errors="replace")
+
+
+def _norm_space(text):
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _clean_inline(text):
+    """Remove watermarks without deleting surrounding story text."""
+    text = URL_RE.sub(" ", text)
+    text = re.sub(r"\[/?(?:i|b|u|font|color|size)[^\]]*\]", "", text, flags=re.I)
+    return _norm_space(text)
+
+
+def _chapter_title(text):
+    """Return a clean chapter title, or None when the block is not a title."""
+    raw = _norm_space(text)
+    m = EBOOK_CHAPTER_RE.match(raw) or ROMAN_CHAPTER_RE.match(raw)
+    if not m:
+        return None
+    title = m.group(1).strip()
+    cut = TITLE_AD_CUT_RE.search(title)
+    if cut:
+        title = title[:cut.start()].rstrip(" -–—:")
+    # Some polluted headings append the advertisement without a separator.
+    ad = STRONG_NOISE_RE.search(title)
+    if ad and ad.start() > 8:
+        title = title[:ad.start()].rstrip(" -–—,;:")
+    return _clean_inline(title)[:240]
+
+
+def _chapter_number(title):
+    m = re.match(
+        r"(?i)^\s*(?:chương|chuong|hồi|hoi|phần|phan|quyển|quyen|tập|tap|"
+        r"chapter|part|section|episode)\s+(\d+)",
+        title or "",
+    )
+    return int(m.group(1)) if m else None
+
+
+def _metadata_noise_values(book):
+    values = set()
+    for namespace, key in (("DC", "title"), ("DC", "creator"), ("DC", "publisher")):
+        try:
+            for value, _attrs in book.get_metadata(namespace, key):
+                value = _norm_space(value).lower().strip(" -–—:|_")
+                if 2 < len(value) < 160:
+                    values.add(value)
+        except Exception:
+            pass
+    return values
+
+
+def _read_epub_documents(path):
+    """Read metadata and spine documents using only the Python standard library.
+
+    This keeps EPUB support available even when ebooklib is missing and avoids
+    extracting the archive to disk. Paths are normalized and constrained to
+    members inside the EPUB ZIP.
+    """
+    with zipfile.ZipFile(path) as zf:
+        names = set(zf.namelist())
+        opf_path = None
+        try:
+            container = ET.fromstring(zf.read("META-INF/container.xml"))
+            node = container.find(".//{*}rootfile")
+            if node is not None:
+                opf_path = node.attrib.get("full-path")
+        except (KeyError, ET.ParseError):
+            pass
+        if not opf_path:
+            opfs = sorted(n for n in names if n.lower().endswith(".opf"))
+            if not opfs:
+                raise RuntimeError("EPUB khong co package OPF")
+            opf_path = opfs[0]
+        if opf_path not in names:
+            raise RuntimeError("EPUB tham chieu OPF khong ton tai")
+
+        opf = ET.fromstring(zf.read(opf_path))
+        opf_dir = posixpath.dirname(opf_path)
+        manifest = {}
+        for item in opf.findall(".//{*}manifest/{*}item"):
+            item_id = item.attrib.get("id")
+            href = unquote((item.attrib.get("href") or "").split("#", 1)[0])
+            media = item.attrib.get("media-type", "")
+            if item_id and href:
+                member = posixpath.normpath(posixpath.join(opf_dir, href))
+                if member.startswith("../") or member.startswith("/"):
+                    continue
+                manifest[item_id] = (member, media)
+
+        metadata_noise = set()
+        for tag in ("title", "creator", "publisher"):
+            for node in opf.findall(".//{*}metadata/{*}%s" % tag):
+                value = _norm_space(node.text).lower().strip(" -–—:|_")
+                if 2 < len(value) < 160:
+                    metadata_noise.add(value)
+
+        ordered = []
+        for ref in opf.findall(".//{*}spine/{*}itemref"):
+            item = manifest.get(ref.attrib.get("idref"))
+            if not item:
+                continue
+            member, media = item
+            if media not in {"application/xhtml+xml", "text/html"}:
+                continue
+            if member in names:
+                ordered.append((member, zf.read(member)))
+
+        # Malformed EPUB fallback: use manifest order, never arbitrary ZIP order.
+        if not ordered:
+            for member, media in manifest.values():
+                if media in {"application/xhtml+xml", "text/html"} and member in names:
+                    ordered.append((member, zf.read(member)))
+        return metadata_noise, ordered
+
+
+def _is_noise_block(text, metadata_noise):
+    cleaned = _clean_inline(text)
+    if not cleaned:
+        return True
+    key = cleaned.lower().strip(" -–—:|_☆")
+    if key in metadata_noise:
+        return True
+    if key in {"mục lục", "muc luc", "contents", "table of contents", "index",
+               "document outline", "cover", "duyên phận 0"}:
+        return True
+    if STRONG_NOISE_RE.search(cleaned):
+        return True
+    # Separators add long, unnatural pauses to TTS and carry no story content.
+    if re.fullmatch(r"[-–—_=*☆oO.\s]{3,}", cleaned):
+        return True
+    return False
+
+
+def _html_blocks(soup):
+    """Extract semantic blocks without duplicating text from wrapper divs."""
+    block_names = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote"}
+    blocks = []
+    for el in soup.find_all(list(block_names)):
+        # Nested block tags are represented by their children only.
+        if any(parent.name in block_names for parent in el.parents):
+            continue
+        raw = el.get_text("\n", strip=True)
+        if not _norm_space(raw):
+            continue
+        href_links = [a for a in el.find_all("a") if (a.get("href") or "").strip()]
+        blocks.append({
+            "raw": raw,
+            "tag": el.name,
+            "has_href": bool(href_links),
+            "href_count": len(href_links),
+        })
+    if not blocks:
+        raw = soup.get_text("\n", strip=True)
+        if _norm_space(raw):
+            blocks.append({"raw": raw, "tag": "body", "has_href": False, "href_count": 0})
+    return blocks
+
+
+def _validate_chapter_sequence(chapters):
+    numbers = [_chapter_number(c["title"]) for c in chapters]
+    numbers = [n for n in numbers if n is not None]
+    missing, duplicates, backwards = [], [], []
+    seen = Counter(numbers)
+    duplicates = sorted(n for n, count in seen.items() if count > 1)
+    for a, b in zip(numbers, numbers[1:]):
+        if b < a:
+            backwards.append({"from": a, "to": b})
+        elif b > a + 1 and b - a <= 1000:
+            missing.extend(range(a + 1, b))
+    return {
+        "numbered_chapters": len(numbers),
+        "missing_numbers": sorted(set(missing))[:500],
+        "duplicate_numbers": duplicates[:500],
+        "backward_jumps": backwards[:100],
+    }
 
 
 def split_text_into_chapters(text, max_chars=0):
@@ -158,6 +314,21 @@ def _enforce_max_chars(chapters, max_chars):
             continue
         # Chia theo doan van (\n\n), gom lai duoi max_chars.
         paras = re.split(r"\n\s*\n", text)
+        # A single paragraph can itself exceed the limit. Split it on sentence
+        # boundaries, then hard-cut only sentences that are still too long.
+        safe_paras = []
+        for para in paras:
+            if len(para) <= max_chars:
+                safe_paras.append(para)
+                continue
+            sentences = re.split(r"(?<=[.!?…])\s+", para)
+            for sentence in sentences:
+                safe_paras.extend(
+                    sentence[i:i + max_chars]
+                    for i in range(0, len(sentence), max_chars)
+                    if sentence[i:i + max_chars]
+                )
+        paras = safe_paras
         buf, part = "", 1
         for p in paras:
             if buf and len(buf) + len(p) > max_chars:
@@ -180,7 +351,17 @@ def parse_zip(path, max_chars):
     chapters = []
     with tempfile.TemporaryDirectory() as tmp:
         with zipfile.ZipFile(path) as zf:
-            zf.extractall(tmp)
+            root = os.path.realpath(tmp)
+            for member in zf.infolist():
+                target = os.path.realpath(os.path.join(root, member.filename))
+                if target != root and not target.startswith(root + os.sep):
+                    raise RuntimeError("ZIP chua duong dan khong an toan: %s" % member.filename)
+                if member.is_dir():
+                    os.makedirs(target, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with zf.open(member) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
         txt_files, epub_files = [], []
         for root, _dirs, files in os.walk(tmp):
             for name in files:
@@ -205,32 +386,108 @@ def parse_zip(path, max_chars):
 
 
 def parse_epub(path, max_chars):
-    """Parse epub theo spine, moi tai lieu HTML = 1 chuong."""
+    """Parse dirty real-world EPUBs into true chapters.
+
+    File boundaries are ignored: one HTML file may contain many chapters, and a
+    chapter may continue in the next file. TOCs, URLs, repeated site branding,
+    converter credits and embedded advertisements are removed at block level.
+    """
+    global LAST_CLEAN_REPORT
     try:
-        from ebooklib import epub
-        import ebooklib
         from bs4 import BeautifulSoup
     except ImportError:
-        print("[warn] Thieu ebooklib/bs4 -> fallback calibre", file=sys.stderr)
-        return parse_via_calibre(path, max_chars)
+        raise RuntimeError("Can cai beautifulsoup4 de doc EPUB")
 
-    book = epub.read_epub(path)
-    chapters = []
-    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
-        soup = BeautifulSoup(item.get_content(), "html.parser")
+    metadata_noise, ordered_items = _read_epub_documents(path)
+    chapters, current = [], None
+    report = {
+        "source_format": "epub",
+        "documents_scanned": 0,
+        "toc_links_removed": 0,
+        "url_occurrences_removed": 0,
+        "noise_blocks_removed": 0,
+        "content_blocks_kept": 0,
+    }
+    # Follow the EPUB spine so chapters retain reading order and navigation or
+    # unreferenced documents are not synthesized accidentally.
+    fallback_documents = []
+    for _member_name, item_content in ordered_items:
+        report["documents_scanned"] += 1
+        soup = BeautifulSoup(item_content, "html.parser")
         for tag in soup(["script", "style"]):
             tag.decompose()
-        heading = soup.find(["h1", "h2", "h3", "title"])
-        title = heading.get_text(strip=True) if heading else ""
-        text = soup.get_text("\n", strip=True)
-        if len(text.strip()) < 20:
+
+        blocks = _html_blocks(soup)
+        fallback_text = []
+        for block in blocks:
+            raw = block["raw"]
+            title = _chapter_title(raw)
+
+            # A chapter-looking linked block is a TOC entry, not story content.
+            if title and block["has_href"]:
+                report["toc_links_removed"] += 1
+                continue
+
+            url_count = len(URL_RE.findall(raw))
+            if url_count:
+                report["url_occurrences_removed"] += url_count
+
+            if title:
+                if current and current["parts"]:
+                    chapters.append({
+                        "title": current["title"],
+                        "text": "\n\n".join(current["parts"]).strip(),
+                    })
+                current = {"title": title, "parts": []}
+                continue
+
+            if _is_noise_block(raw, metadata_noise):
+                report["noise_blocks_removed"] += 1
+                continue
+
+            cleaned = _clean_inline(raw)
+            if not cleaned:
+                continue
+            fallback_text.append(cleaned)
+            if current is not None:
+                current["parts"].append(cleaned)
+                report["content_blocks_kept"] += 1
+
+        if fallback_text:
+            fallback_documents.append({
+                "title": _norm_space(fallback_text[0])[:80] or "Noi dung",
+                "text": "\n\n".join(fallback_text),
+            })
+
+    if current and current["parts"]:
+        chapters.append({
+            "title": current["title"],
+            "text": "\n\n".join(current["parts"]).strip(),
+        })
+
+    # Books without recognizable chapter headings still remain usable.
+    if not chapters:
+        chapters = [c for c in fallback_documents if len(c["text"]) >= 20]
+
+    # Remove exact duplicate chapters introduced by malformed spines.
+    unique, seen = [], set()
+    for chapter in chapters:
+        signature = (_norm_space(chapter["title"]).lower(),
+                     _norm_space(chapter["text"])[:500].lower())
+        if signature in seen:
+            report["noise_blocks_removed"] += 1
             continue
-        if not title:
-            title = text.strip().splitlines()[0][:80]
-        chapters.append({"title": title, "text": text.strip()})
+        seen.add(signature)
+        unique.append(chapter)
+    chapters = unique
+
     if max_chars and max_chars > 0:
         chapters = _enforce_max_chars(chapters, max_chars)
-    return [c for c in chapters if c["text"].strip()]
+    chapters = [c for c in chapters if c["text"].strip()]
+    report["chapters_detected"] = len(chapters)
+    report.update(_validate_chapter_sequence(chapters))
+    LAST_CLEAN_REPORT = report
+    return chapters
 
 
 def parse_docx(path, max_chars):
@@ -267,25 +524,24 @@ def parse_pdf(path, max_chars):
 
 
 def parse_via_calibre(path, max_chars):
-    """Fallback chung: dung calibre `ebook-convert` de doi ve .txt."""
+    """Convert MOBI/AZW/FB2/HTML/RTF to EPUB, then use the same cleaner."""
     if not shutil.which("ebook-convert"):
         raise RuntimeError(
             "Dinh dang nay can calibre (ebook-convert). Hay cai calibre trong workflow."
         )
-    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tf:
-        out_txt = tf.name
+    with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tf:
+        out_epub = tf.name
     try:
         subprocess.run(
-            ["ebook-convert", path, out_txt, "--enable-heuristics"],
+            ["ebook-convert", path, out_epub, "--enable-heuristics"],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        text = read_text_file(out_txt)
+        return parse_epub(out_epub, max_chars)
     finally:
-        if os.path.exists(out_txt):
-            os.remove(out_txt)
-    return split_text_into_chapters(text, max_chars)
+        if os.path.exists(out_epub):
+            os.remove(out_epub)
 
 
 PARSERS = {
@@ -301,15 +557,12 @@ CALIBRE_EXTS = {".mobi", ".azw3", ".azw", ".fb2", ".html", ".htm", ".rtf", ".lit
 def parse_ebook(path, max_chars=0):
     ext = os.path.splitext(path)[1].lower()
     if ext in PARSERS:
-        chapters = PARSERS[ext](path, max_chars)
-    elif ext in CALIBRE_EXTS:
-        chapters = parse_via_calibre(path, max_chars)
-    else:
-        # Thu doc nhu text thuan neu khong ro dinh dang.
-        print("[warn] Dinh dang la %r, thu doc nhu text" % ext, file=sys.stderr)
-        chapters = parse_txt(path, max_chars)
-    # Loai bo phan MUC LUC o dau (neu co) truoc khi dem/cat chuong.
-    return drop_toc_chapters(chapters)
+        return PARSERS[ext](path, max_chars)
+    if ext in CALIBRE_EXTS:
+        return parse_via_calibre(path, max_chars)
+    # Thu doc nhu text thuan neu khong ro dinh dang.
+    print("[warn] Dinh dang la %r, thu doc nhu text" % ext, file=sys.stderr)
+    return parse_txt(path, max_chars)
 
 
 # ------------------------------------------------------------------ main
@@ -363,6 +616,7 @@ def main():
                 {"index": i, "title": c["title"][:200], "chars": len(c["text"])}
                 for i, c in enumerate(chapters, start=1)
             ],
+            "cleaning": LAST_CLEAN_REPORT,
         }
         print(json.dumps(probe, ensure_ascii=False))
         return
@@ -397,6 +651,10 @@ def main():
 
     with open(os.path.join(args.out_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    if LAST_CLEAN_REPORT:
+        with open(os.path.join(args.out_dir, "cleaning_report.json"), "w", encoding="utf-8") as f:
+            json.dump(LAST_CLEAN_REPORT, f, ensure_ascii=False, indent=2)
 
     total = sum(m["chars"] for m in manifest)
     scope = ""

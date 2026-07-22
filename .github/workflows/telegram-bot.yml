@@ -1,0 +1,41 @@
+name: Telegram Bot (GitHub polling)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: telegram-audiobook-bot
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 355
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
+      GITHUB_TOKEN: ${{ github.token }}
+      MAX_RUNTIME_SEC: "20400"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate configuration
+        run: test -n "$TELEGRAM_BOT_TOKEN" || { echo "Missing TELEGRAM_BOT_TOKEN"; exit 2; }
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg poppler-utils
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install dependencies
+        run: pip install --requirement requirements.txt --requirement pipeline/requirements-pipeline.txt --requirement bot/requirements-bot.txt
+      - name: Run bot
+        run: python bot/bot_poll.py --loop

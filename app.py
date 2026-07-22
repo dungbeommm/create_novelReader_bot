@@ -1,5 +1,7 @@
 import io
 import os
+import threading
+import time
 import wave
 
 from flask import Flask, request, send_file, jsonify, Response
@@ -10,6 +12,11 @@ MODEL_PATH = os.path.join(BASE_DIR, "voice", "ngochuyennew.onnx")
 CONFIG_PATH = os.path.join(BASE_DIR, "voice", "ngochuyennew.onnx.json")
 
 app = Flask(__name__)
+TTS_API_KEY = os.environ.get("TTS_API_KEY", "").strip()
+MAX_REQUESTS_PER_MINUTE = int(os.environ.get("TTS_RATE_LIMIT", "10"))
+_tts_lock = threading.BoundedSemaphore(int(os.environ.get("TTS_CONCURRENCY", "1")))
+_rate_lock = threading.Lock()
+_request_times = {}
 
 # Load the voice model once at startup (kept in memory for all requests).
 print("Loading Piper voice model...", flush=True)
@@ -28,16 +35,41 @@ def synthesize_wav_bytes(text, length_scale=None, noise_scale=None, noise_w=None
     if noise_w is not None:
         kwargs["noise_w"] = noise_w
 
-    # New API (piper-tts >= 1.3): synthesize_wav(text, wav_file)
-    if hasattr(voice, "synthesize_wav"):
-        with wave.open(buf, "wb") as wav_file:
-            voice.synthesize_wav(text, wav_file)
-        return buf.getvalue()
-
-    # Old / stable API (piper-tts 1.2.x): synthesize(text, wav_file, **kwargs)
+    # Prefer the 1.2 API because it supports the inference overrides exposed by
+    # this service. Falling back to synthesize_wav is only safe without them.
     with wave.open(buf, "wb") as wav_file:
-        voice.synthesize(text, wav_file, **kwargs)
+        if hasattr(voice, "synthesize"):
+            voice.synthesize(text, wav_file, **kwargs)
+        elif kwargs:
+            raise RuntimeError("This Piper version does not support inference overrides")
+        else:
+            voice.synthesize_wav(text, wav_file)
     return buf.getvalue()
+
+
+def _authorized():
+    if not TTS_API_KEY:
+        # Safe default: local development works, public deployments must set a
+        # key or explicitly opt into insecure mode.
+        if os.environ.get("ALLOW_INSECURE_TTS", "").lower() == "true":
+            return True
+        return (request.remote_addr or "") in {"127.0.0.1", "::1"}
+    supplied = request.headers.get("X-API-Key", "")
+    import hmac
+    return hmac.compare_digest(supplied, TTS_API_KEY)
+
+
+def _within_rate_limit():
+    now = time.monotonic()
+    key = request.remote_addr or "unknown"
+    with _rate_lock:
+        recent = [t for t in _request_times.get(key, []) if now - t < 60]
+        if len(recent) >= MAX_REQUESTS_PER_MINUTE:
+            _request_times[key] = recent
+            return False
+        recent.append(now)
+        _request_times[key] = recent
+        return True
 
 
 def _float_arg(name):
@@ -87,6 +119,8 @@ INDEX_HTML = """<!doctype html>
     <p class=\"sub\">Giong Ngoc Huyen &middot; Tieng Viet &middot; Piper TTS</p>
     <label for=\"text\">Nhap van ban</label>
     <textarea id=\"text\" placeholder=\"Nhap doan van ban tieng Viet o day...\">Xin chao, day la giong noi tieng Viet duoc tao tu Piper.</textarea>
+    <label for=\"apiKey\">API key (neu server yeu cau)</label>
+    <input type=\"password\" id=\"apiKey\" autocomplete=\"off\" style=\"width:100%;padding:8px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0\">
     <div class=\"row\">
       <div>
         <label for=\"length\">Toc do (length_scale)</label>
@@ -124,7 +158,10 @@ btn.addEventListener('click', async () => {
   });
   btn.disabled = true; statusEl.textContent = 'Dang tao giong noi...';
   try {
-    const res = await fetch('/tts?' + params.toString());
+    const apiKey = document.getElementById('apiKey').value;
+    const res = await fetch('/tts?' + params.toString(), {
+      headers: apiKey ? {'X-API-Key': apiKey} : {}
+    });
     if (!res.ok) { throw new Error('Loi ' + res.status); }
     const blob = await res.blob();
     if (lastUrl) URL.revokeObjectURL(lastUrl);
@@ -155,18 +192,27 @@ def health():
 
 @app.route("/tts", methods=["GET", "POST"])
 def tts():
+    if not _authorized():
+        return jsonify({"error": "Unauthorized"}), 401
+    if not _within_rate_limit():
+        return jsonify({"error": "Rate limit exceeded"}), 429
     text = (request.values.get("text") or "").strip()
     if not text:
         return jsonify({"error": "Missing 'text' parameter"}), 400
     if len(text) > 5000:
         return jsonify({"error": "Text too long (max 5000 chars)"}), 400
 
-    audio = synthesize_wav_bytes(
-        text,
-        length_scale=_float_arg("length_scale"),
-        noise_scale=_float_arg("noise_scale"),
-        noise_w=_float_arg("noise_w"),
-    )
+    if not _tts_lock.acquire(blocking=False):
+        return jsonify({"error": "TTS engine is busy"}), 503
+    try:
+        audio = synthesize_wav_bytes(
+            text,
+            length_scale=_float_arg("length_scale"),
+            noise_scale=_float_arg("noise_scale"),
+            noise_w=_float_arg("noise_w"),
+        )
+    finally:
+        _tts_lock.release()
     return send_file(
         io.BytesIO(audio),
         mimetype="audio/wav",
