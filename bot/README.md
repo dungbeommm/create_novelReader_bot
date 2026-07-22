@@ -1,49 +1,45 @@
-# Bot Telegram tao audiobook
+# Bot Telegram - Ebook to Audiobook
 
-Co **2 cach chay bot**, dung cach nao cung duoc:
+Bot nhan file ebook, day len GitHub, kich hoat workflow `audiobook.yml`, cho
+GitHub Actions tao audio bang Piper (giong Ngoc Huyen) roi gui lai link GitHub
+Release.
 
-| | Cach A: chay tren may/VPS | Cach B: chay tren GitHub |
-|---|---|---|
-| File | `telegram_bot.py` | `bot_poll.py` + `.github/workflows/bot.yml` |
-| May chay | Can may/VPS bat 24/7 | Khong can, GitHub lo het |
-| Token GitHub (PAT) | **Can** (`GITHUB_TOKEN` ca nhan) | **Khong can** (Actions co san) |
-| Toc do tra loi | Tuc thi | Cham ~5 phut/buoc (theo lich cron) |
-| Gioi han file | ~20MB (Bot API) | ~20MB (Bot API) |
+## 1. Chuan bi
 
-Ca hai deu dung chung luong hoi thoai: `/tts` -> gui file -> hoi ten truyen -> chon toc do -> chon dinh dang -> bao "Bat dau tao audio" -> khi xong gui link Release.
+### a) Tao bot Telegram
+1. Chat voi **@BotFather** tren Telegram -> `/newbot` -> lay **token**.
 
----
+### b) Tao GitHub token (fine-grained PAT)
+1. GitHub -> Settings -> Developer settings -> Fine-grained tokens.
+2. Chi chon repo `piper-tts-service`.
+3. Quyen: **Contents = Read and write**, **Actions = Read and write**.
 
-## Cach A - Chay tren may/VPS (`telegram_bot.py`)
+### c) Cau hinh bien moi truong
+```bash
+cd bot
+cp .env.example .env
+# mo .env dien token va owner/repo
+```
 
-1. Tao bot voi @BotFather, lay `TELEGRAM_BOT_TOKEN`.
-2. Tao GitHub fine-grained token (`GITHUB_TOKEN`) chi cho repo nay, quyen **Contents: RW** + **Actions: RW**.
-3. Cau hinh:
-   ```bash
-   cp .env.example .env   # dien token va GITHUB_REPO=owner/repo
-   pip install -r requirements-bot.txt
-   set -a; source .env; set +a
-   python telegram_bot.py
-   ```
-Bot day file len repo, kich hoat workflow `audiobook.yml`, roi gui link khi xong.
+## 2. Cai va chay
 
----
+```bash
+pip install -r bot/requirements-bot.txt
+# nap bien moi truong tu .env (vi du dung python-dotenv hoac export thu cong)
+set -a; source bot/.env; set +a
+python bot/telegram_bot.py
+```
 
-## Cach B - Chay tren GitHub (`bot_poll.py`) [khuyen dung neu khong co VPS]
+## 3. Cach dung
 
-Khong can may rieng, khong can token ca nhan.
+1. Gui file ebook cho bot (`.txt`, `.epub`, `.zip` chua txt, `.mobi`, `.pdf`, `.docx`...).
+2. Chon **toc do doc** (0.9 - 1.3).
+3. Chon **dinh dang** (MP3 / M4B / WAV).
+4. Cho vai phut -> bot gui **link GitHub Release** kem cac file audio.
 
-1. Tao bot voi @BotFather, lay token.
-2. Trong repo GitHub: **Settings > Secrets and variables > Actions > New repository secret**
-   - `TELEGRAM_BOT_TOKEN` = token bot.
-   - (tuy chon) `ALLOWED_USER_IDS` = user id cua ban (chan nguoi la).
-3. Vao tab **Actions**, bat workflow **"Telegram Bot (chay tren GitHub theo lich)"**.
-   - No tu chay moi ~5 phut. Muon test ngay: bam **Run workflow**.
-4. Nhan tin cho bot: `/tts` -> gui file -> ... (moi buoc cho toi vai phut vi cron 5 phut/lan).
+## 4. Luu y
 
-**Cach hoat dong:** workflow `bot.yml` chay `bot_poll.py`, poll tin nhan (offset luu trong `bot/state/state.json`), tao audio ngay trong lan chay do bang `GITHUB_TOKEN` co san cua Actions, tao Release va nhan tin bao link. Trang thai hoi thoai + file upload tam luu trong `bot/state/` va duoc commit lai sau moi luot.
-
-**Luu y:**
-- Do tre: moi buoc hoi thoai cho toi ~5 phut (gioi han cron toi thieu cua GitHub). Neu can tuc thi, dung Cach A.
-- File > 20MB: Bot API Telegram khong tai duoc; hay chia nho hoac dung Cach A voi local Bot API server.
-- `bot/state/` la thu muc lam viec cua bot; khong sua tay khi bot dang chay.
+- File Telegram gioi han ~50MB khi gui truc tiep; bot gui **link Release** nen khong bi gioi han.
+- Bot poll trang thai workflow moi 10s; truyen dai co the mat nhieu phut.
+- Muon gioi han nguoi dung: dien `ALLOWED_USER_IDS` trong `.env`.
+- Co the deploy bot len Render/VPS bang cach chay lenh `python bot/telegram_bot.py` nhu mot worker.

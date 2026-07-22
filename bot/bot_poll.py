@@ -24,6 +24,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 
 import requests
 
@@ -339,12 +340,15 @@ def process_ready_job(skey, sess):
 
 # ------------------------------------------------------------ main
 
-def main():
-    state = load_state()
-    resp = tg("getUpdates", offset=state.get("offset", 0), timeout=0,
+def poll_once(state, long_poll=False):
+    """Poll 1 dot: doc update moi, dan dat hoi thoai, chay job da san sang."""
+    timeout = 50 if long_poll else 0
+    resp = tg("getUpdates", offset=state.get("offset", 0), timeout=timeout,
               allowed_updates=["message", "callback_query"])
+    changed = False
     for upd in resp.get("result", []):
         state["offset"] = upd["update_id"] + 1
+        changed = True
         try:
             if "message" in upd:
                 handle_message(upd["message"], state)
@@ -359,9 +363,52 @@ def main():
         if sess.get("step") == "ready":
             process_ready_job(skey, sess)
             state["sessions"].pop(skey, None)
+            changed = True
+    return changed
 
+
+def git_persist(message):
+    """Commit + push thu muc bot/state de lan chay ke tiep tiep quan lien mach."""
+    try:
+        subprocess.run(["git", "add", "bot/state"], cwd=REPO_ROOT, check=False)
+        staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO_ROOT)
+        if staged.returncode != 0:
+            subprocess.run(["git", "commit", "-m", message], cwd=REPO_ROOT, check=False)
+            subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=REPO_ROOT, check=False)
+            subprocess.run(["git", "push"], cwd=REPO_ROOT, check=False)
+    except Exception as e:  # noqa
+        print("Loi luu state: %s" % e, file=sys.stderr)
+
+
+def main():
+    loop = "--loop" in sys.argv
+    state = load_state()
+
+    if not loop:
+        # Che do 1 luot (dung cho cron ngat quang).
+        poll_once(state, long_poll=False)
+        save_state(state)
+        print("Xong 1 luot poll. offset=%s" % state.get("offset"))
+        return
+
+    # Che do CHAY LIEN TUC: long-poll cho den khi het ngan sach thoi gian, roi
+    # thoat de lan chay ke tiep (cron + concurrency dam bao) tiep quan lien mach.
+    budget = int(os.environ.get("MAX_RUNTIME_SEC", "20400"))  # ~5h40m
+    started = time.time()
+    print("Bat dau che do chay lien tuc (budget=%ss)." % budget)
+    while time.time() - started < budget:
+        try:
+            changed = poll_once(state, long_poll=True)
+        except Exception as e:  # noqa
+            print("Loi poll: %s" % e, file=sys.stderr)
+            time.sleep(3)
+            continue
+        if changed:
+            save_state(state)
+            git_persist("bot: cap nhat trang thai poll")
     save_state(state)
-    print("Xong 1 luot poll. offset=%s" % state.get("offset"))
+    git_persist("bot: luu state truoc khi ket thuc luot chay")
+    print("Ket thuc luot chay lien tuc. offset=%s" % state.get("offset"))
 
 
 if __name__ == "__main__":

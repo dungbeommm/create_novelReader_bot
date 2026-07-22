@@ -1,7 +1,10 @@
 name: Telegram Bot (chay tren GitHub theo lich)
 
 # Bot chay trong GitHub Actions: khong can may/VPS, khong can PAT ca nhan.
-# Moi ~5 phut se poll tin nhan Telegram, dan dat hoi thoai, tao audio va Release.
+# CHE DO CHAY LIEN TUC: moi luot chay poll lien tuc (long-poll, tra loi gan nhu
+# tuc thi) trong ~5h40m roi thoat. Cron */5 + concurrency dam bao luon co san 1
+# luot dang xep hang de tiep quan ngay khi luot truoc ket thuc => chay ~24/7.
+# Ban chi can bam "Run workflow" 1 lan dau; sau do no tu duy tri.
 #
 # CAN cau hinh 1 secret trong repo:
 #   Settings > Secrets and variables > Actions > New repository secret
@@ -10,8 +13,8 @@ name: Telegram Bot (chay tren GitHub theo lich)
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # 5 phut/lan (toi thieu cua GitHub)
-  workflow_dispatch: {}      # cho phep bam chay ngay de test
+    - cron: "*/5 * * * *"   # dong vai tro "nguoi tiep quan": luon xep san 1 luot ke tiep
+  workflow_dispatch: {}      # bam chay ngay lan dau
 
 # Khong cho 2 lan poll chay chong len nhau.
 concurrency:
@@ -24,6 +27,7 @@ permissions:
 jobs:
   poll:
     runs-on: ubuntu-latest
+    timeout-minutes: 355   # gan sat gioi han 6h cua GitHub Actions
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,22 +48,13 @@ jobs:
           pip install -r pipeline/requirements-pipeline.txt
           pip install -r bot/requirements-bot.txt
 
-      - name: Chay bot (poll 1 luot)
+      - name: Chay bot (che do chay lien tuc)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python bot/bot_poll.py
-
-      - name: Luu lai trang thai hoi thoai
-        if: ${{ always() }}
+          MAX_RUNTIME_SEC: "20400"   # ~5h40m roi thoat de luot ke tiep tiep quan
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add bot/state 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "bot: cap nhat trang thai poll"
-            git push
-          else
-            echo "Khong co thay doi trang thai."
-          fi
+          python bot/bot_poll.py --loop
