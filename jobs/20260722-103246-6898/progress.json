@@ -6,7 +6,7 @@
   "requested_start": 1,
   "final_chapter": 1000,
   "total_book_chapters": 4100,
-  "next_chapter": 21,
+  "next_chapter": 31,
   "batch_size": 10,
   "completed_batches": [
     {
@@ -18,6 +18,11 @@
       "start": 11,
       "end": 20,
       "asset": "20260722-103246-6898_chapters_11-20.zip"
+    },
+    {
+      "start": 21,
+      "end": 30,
+      "asset": "20260722-103246-6898_chapters_21-30.zip"
     }
   ],
   "status": "processing",
