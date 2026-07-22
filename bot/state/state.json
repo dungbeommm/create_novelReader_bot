@@ -1,8 +1,8 @@
 {
-  "offset": 195557047,
+  "offset": 195557048,
   "sessions": {
     "6412935043": {
-      "step": "await_speed",
+      "step": "await_format",
       "filename": "--lược thiên ký full - thạnh 0901945059.epub",
       "input_path": "bot/state/uploads/6412935043/--lược thiên ký full - thạnh 0901945059.epub",
       "title": "lược thiên ký",
