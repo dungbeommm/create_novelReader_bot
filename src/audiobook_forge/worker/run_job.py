@@ -1,0 +1,157 @@
+"""The job executed inside GitHub Actions for one conversion task.
+
+Responsibilities:
+1. Download intake ebook(s) from the transient intake release.
+2. Run the conversion pipeline (with resume + cache + soft time budget).
+3. Package outputs and publish a GitHub Release.
+4. Notify the user on Telegram with the release link.
+5. Clean up the transient intake release.
+
+The function is resumable: if the pipeline raises TimeBudgetExceeded, the job
+exits with a dedicated code so the workflow can re-dispatch itself and continue
+from the saved checkpoint.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from dataclasses import replace
+from pathlib import Path
+
+from ..config.loader import load_settings
+from ..core.domain import ConversionOptions, Task
+from ..core.enums import TaskStatus
+from ..core.errors import TimeBudgetExceeded
+from ..github.client import GitHubClient
+from ..release.packager import ReleasePackager
+from ..services.container import Container
+from ..utils.fs import ensure_dir
+from ..utils.logging import get_logger, setup_logging
+from .notify import TelegramNotifier
+
+logger = get_logger(__name__)
+
+EXIT_OK = 0
+EXIT_RESUME = 75  # EX_TEMPFAIL: signal the workflow to re-dispatch
+EXIT_FAILED = 1
+
+
+def _download_intake(client: GitHubClient, tag: str, dest_dir: Path) -> list[Path]:
+    release = client.get_release_by_tag(tag)
+    if not release:
+        raise FileNotFoundError(f"Intake release {tag} not found")
+    files: list[Path] = []
+    for asset in release.get("assets", []):
+        dst = dest_dir / asset["name"]
+        client.download_asset(asset["url"], dst)
+        files.append(dst)
+    return files
+
+
+def run_job(
+    task_id: str,
+    chat_id: int,
+    intake_tag: str,
+    options_json: str,
+) -> int:
+    """Run one conversion task end-to-end. Returns a process exit code."""
+    settings = load_settings()
+    setup_logging(settings.log_level)
+    container = Container(settings)
+    client = GitHubClient(
+        repository=settings.github.repository,
+        api_url=settings.github.api_url,
+    )
+    notifier = TelegramNotifier(os.getenv("TELEGRAM_BOT_TOKEN", ""), chat_id)
+    queue = container.queue
+
+    task = queue.get(task_id) or Task(
+        id=task_id,
+        user_id=0,
+        chat_id=chat_id,
+        options=ConversionOptions.from_dict(json.loads(options_json)),
+    )
+    task.status = TaskStatus.RUNNING
+    queue.update(task)
+
+    intake_dir = ensure_dir(Path(settings.work_dir) / task_id / "intake")
+    deadline = time.time() + settings.github.runner_time_budget_seconds
+
+    try:
+        logger.info("[download] Fetching intake for %s", task_id)
+        inputs = _download_intake(client, intake_tag, intake_dir)
+
+        reporter = _QueueReporter(queue, task)
+        result = container.pipeline.run(
+            task_id=task_id,
+            inputs=inputs,
+            options=task.options,
+            reporter=reporter,
+            deadline=deadline,
+        )
+
+        packager = ReleasePackager(settings.release, settings.compression)
+        release_dir = ensure_dir(Path(settings.output_dir) / task_id / "release")
+        assets = packager.assemble(result, release_dir)
+
+        tag = f"{settings.release.tag_prefix}-{task_id}"
+        body = _release_notes(result)
+        release = container.pipeline  # noqa: F841 - keep container referenced
+        from ..github.release import GitHubReleasePublisher
+
+        publisher = GitHubReleasePublisher(client, settings.release)
+        url = publisher.publish(tag, f"Audiobook: {result.book_title}", assets, body)
+
+        task.status = TaskStatus.SUCCEEDED
+        task.release_url = url
+        task.progress = 1.0
+        task.message = "Completed"
+        queue.update(task)
+        notifier.send(f"\u2705 Your audiobook is ready!\n{result.book_title}\n{url}")
+
+        logger.info("[cleanup] Removing intake release %s", intake_tag)
+        client.delete_release(intake_tag)
+        return EXIT_OK
+
+    except TimeBudgetExceeded as exc:
+        logger.warning("[resume] %s", exc)
+        task.status = TaskStatus.RESUMING
+        task.message = "Runner time budget reached; will resume."
+        task.attempts += 1
+        queue.update(task)
+        notifier.send("\u23f3 Still working on your audiobook (resuming on the next run)\u2026")
+        return EXIT_RESUME
+
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Job failed")
+        task.status = TaskStatus.FAILED
+        task.message = str(exc)
+        queue.update(task)
+        notifier.send(f"\u274c Conversion failed: {exc}")
+        return EXIT_FAILED
+
+
+def _release_notes(result) -> str:
+    minutes = int(result.total_duration_seconds // 60)
+    return (
+        f"# {result.book_title}\n\n"
+        f"- Files: {len(result.output_files)}\n"
+        f"- Duration: ~{minutes} min\n"
+        f"- Generated by Audiobook Forge\n"
+    )
+
+
+class _QueueReporter:
+    """ProgressReporter that persists progress into the task queue."""
+
+    def __init__(self, queue, task: Task) -> None:
+        self._queue = queue
+        self._task = task
+
+    def report(self, stage: str, progress: float, message: str = "") -> None:
+        self._task.stage = stage
+        self._task.progress = max(0.0, min(1.0, progress))
+        self._task.message = message
+        self._queue.update(self._task)

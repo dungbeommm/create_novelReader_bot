@@ -1,0 +1,136 @@
+name: Convert Ebook to Audiobook
+
+# Triggered by the Telegram bot via workflow_dispatch. Each run processes one
+# task. If the runner approaches its time budget, the job checkpoints and the
+# "resume" step re-dispatches this same workflow so work continues without
+# starting over. All heavy compute runs on free GitHub-hosted runners.
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: Unique task id
+        required: true
+      chat_id:
+        description: Telegram chat id to notify
+        required: true
+      intake_tag:
+        description: Tag of the transient intake release holding source files
+        required: true
+      options:
+        description: JSON-encoded conversion options
+        required: true
+      source_names:
+        description: JSON list of original file names (informational)
+        required: false
+        default: "[]"
+      attempt:
+        description: Resume attempt counter
+        required: false
+        default: "1"
+
+# Serialize per task so a resume never overlaps its predecessor.
+concurrency:
+  group: convert-${{ github.event.inputs.task_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # create releases / tags
+  actions: write    # re-dispatch this workflow for resume
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350   # under the 6h hard cap; pipeline self-stops earlier
+    env:
+      AUDIOBOOK_FORGE_CONFIG: config/default.yaml
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TASK_ID: ${{ github.event.inputs.task_id }}
+      CHAT_ID: ${{ github.event.inputs.chat_id }}
+      INTAKE_TAG: ${{ github.event.inputs.intake_tag }}
+      OPTIONS_JSON: ${{ github.event.inputs.options }}
+      ATTEMPT: ${{ github.event.inputs.attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg espeak-ng
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # Restore rendered-audio cache + checkpoint so we resume, not restart.
+      - name: Restore audio cache and checkpoint
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/audio
+            .queue/checkpoints
+            .out
+          key: work-${{ github.event.inputs.task_id }}-${{ github.run_id }}
+          restore-keys: |
+            work-${{ github.event.inputs.task_id }}-
+
+      - name: Run conversion job
+        id: run
+        continue-on-error: true
+        run: |
+          set +e
+          audiobook-forge worker \
+            --task-id "${TASK_ID}" \
+            --chat-id "${CHAT_ID}" \
+            --intake-tag "${INTAKE_TAG}" \
+            --options "${OPTIONS_JSON}"
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Upload run artifacts (logs + checkpoint)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-${{ github.event.inputs.task_id }}-attempt-${{ github.event.inputs.attempt }}
+          path: |
+            .out/**
+            .queue/checkpoints/**
+          retention-days: 3
+          if-no-files-found: ignore
+
+      # If the job self-stopped for time budget (exit 75), re-dispatch to resume.
+      - name: Resume on time budget
+        if: steps.run.outputs.exit_code == '75'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          next=$(( ATTEMPT + 1 ))
+          echo "Re-dispatching to resume (attempt ${next})"
+          gh workflow run convert.yml \
+            --ref "${GITHUB_REF_NAME}" \
+            -f task_id="${TASK_ID}" \
+            -f chat_id="${CHAT_ID}" \
+            -f intake_tag="${INTAKE_TAG}" \
+            -f options="${OPTIONS_JSON}" \
+            -f attempt="${next}"
+
+      - name: Fail the job if the conversion failed
+        if: steps.run.outputs.exit_code != '0' && steps.run.outputs.exit_code != '75'
+        run: |
+          echo "Conversion failed with exit code ${{ steps.run.outputs.exit_code }}"
+          exit 1
