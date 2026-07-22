@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "title": "Tạo Hóa Chi Vương",
+  "format": "wav",
+  "length_scale": "1.0",
+  "requested_start": 1,
+  "final_chapter": 1000,
+  "total_book_chapters": 4100,
+  "next_chapter": 11,
+  "batch_size": 10,
+  "completed_batches": [
+    {
+      "start": 1,
+      "end": 10,
+      "asset": "20260722-103246-6898_chapters_1-10.zip"
+    }
+  ],
+  "status": "processing",
+  "cleaning": {
+    "source_format": "epub",
+    "documents_scanned": 358,
+    "toc_links_removed": 4101,
+    "url_occurrences_removed": 0,
+    "noise_blocks_removed": 884,
+    "content_blocks_kept": 314610,
+    "chapters_detected": 4100,
+    "numbered_chapters": 4100,
+    "missing_numbers": [],
+    "duplicate_numbers": [],
+    "backward_jumps": []
+  }
+}
