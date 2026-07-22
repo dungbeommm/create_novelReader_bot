@@ -14,6 +14,10 @@ on:
       chat_id:
         description: Telegram chat id to notify
         required: true
+      user_id:
+        description: Telegram user id (informational)
+        required: false
+        default: ""
       intake_tag:
         description: Tag of the transient intake release holding source files
         required: true
