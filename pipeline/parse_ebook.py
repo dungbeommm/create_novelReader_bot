@@ -265,17 +265,64 @@ def main():
         default=0,
         help="Chia nho chuong dai hon N ky tu (0 = khong chia)",
     )
+    ap.add_argument(
+        "--start",
+        type=int,
+        default=1,
+        help="Chuong bat dau (1-based). Vi du --start 5 -> bo qua 4 chuong dau.",
+    )
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Chi lay toi da N chuong ke tu --start (0 = lay het). Dung de tranh qua tai.",
+    )
+    ap.add_argument(
+        "--probe",
+        action="store_true",
+        help="Chi DEM so chuong (khong ghi file), in JSON ra stdout roi thoat.",
+    )
     args = ap.parse_args()
 
     if not os.path.isfile(args.input):
         print("Loi: khong tim thay file %r" % args.input, file=sys.stderr)
         sys.exit(1)
 
-    os.makedirs(args.out_dir, exist_ok=True)
     chapters = parse_ebook(args.input, args.max_chars)
     if not chapters:
         print("Loi: khong trich xuat duoc noi dung nao", file=sys.stderr)
         sys.exit(2)
+
+    total_all = len(chapters)
+
+    # Che do PROBE: chi dem so chuong (khong ghi file) de bot hoi nguoi dung
+    # muon tao bao nhieu chuong, tranh gui ca cuon mot luc gay qua tai.
+    if args.probe:
+        probe = {
+            "count": total_all,
+            "chapters": [
+                {"index": i, "title": c["title"][:200], "chars": len(c["text"])}
+                for i, c in enumerate(chapters, start=1)
+            ],
+        }
+        print(json.dumps(probe, ensure_ascii=False))
+        return
+
+    # Cat lay khoang chuong mong muon (start 1-based; limit = so chuong, 0 = het).
+    start = max(1, args.start)
+    selected = chapters[start - 1:]
+    if args.limit and args.limit > 0:
+        selected = selected[: args.limit]
+    if not selected:
+        print(
+            "Loi: khoang chuong khong hop le (start=%d, limit=%d, tong=%d)"
+            % (args.start, args.limit, total_all),
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    chapters = selected
+
+    os.makedirs(args.out_dir, exist_ok=True)
 
     manifest = []
     for i, ch in enumerate(chapters, start=1):
@@ -293,7 +340,12 @@ def main():
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     total = sum(m["chars"] for m in manifest)
-    print("\nHoan tat: %d chuong, tong %d ky tu -> %s" % (len(manifest), total, args.out_dir))
+    scope = ""
+    if args.start > 1 or (args.limit and args.limit > 0):
+        scope = " (chon %d/%d chuong, bat dau tu chuong %d)" % (
+            len(manifest), total_all, max(1, args.start),
+        )
+    print("\nHoan tat: %d chuong, tong %d ky tu -> %s%s" % (len(manifest), total, args.out_dir, scope))
 
 
 if __name__ == "__main__":

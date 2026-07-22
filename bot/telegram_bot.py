@@ -14,10 +14,14 @@ Chay:
 
 Yeu cau: python-telegram-bot v20+, requests.
 """
+import asyncio
 import base64
 import html
 import json
 import os
+import re
+import subprocess
+import tempfile
 import time
 import datetime as dt
 import secrets
@@ -56,6 +60,8 @@ GH_HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
 SUPPORTED_EXT = (
     ".txt", ".epub", ".zip", ".mobi", ".azw3", ".azw",
     ".fb2", ".html", ".htm", ".docx", ".pdf", ".rtf",
@@ -92,6 +98,8 @@ def gh_dispatch_workflow(job_id, opts):
             "length_scale": str(opts.get("length_scale", "1.0")),
             "package": str(opts.get("package", "auto")),
             "max_chars": str(opts.get("max_chars", "0")),
+            "start": str(opts.get("start", "1")),
+            "limit": str(opts.get("limit", "0")),
             "install_calibre": str(opts.get("install_calibre", "false")).lower(),
         },
     }
@@ -152,6 +160,76 @@ FORMAT_OPTIONS = {
     "fmt_wav": ("\U0001f4bf WAV", "wav"),
 }
 
+# Cac muc chon nhanh so chuong (chi hien nhung muc nho hon tong so chuong).
+CHAPTER_QUICK = (10, 20, 50, 100)
+
+
+def _probe_chapters_blocking(content, filename):
+    """Best-effort: DEM so chuong bang parse_ebook.py --probe. Loi -> None.
+
+    Ghi tam noi dung ra file de parser doc, chay probe, roi xoa file tam.
+    """
+    tmp_path = None
+    try:
+        suffix = os.path.splitext(filename)[1] or ".txt"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+            tf.write(content)
+            tmp_path = tf.name
+        out = subprocess.run(
+            ["python3", os.path.join(REPO_ROOT, "pipeline", "parse_ebook.py"),
+             "--input", tmp_path, "--probe"],
+            capture_output=True, text=True, cwd=REPO_ROOT, timeout=300,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        return json.loads(out.stdout.strip().splitlines()[-1])
+    except Exception:  # noqa - probe la best-effort
+        return None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+async def probe_chapters(content, filename):
+    """Chay probe trong executor de khong chan vong lap asyncio."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _probe_chapters_blocking, content, filename)
+
+
+def chapter_keyboard(total):
+    rows = []
+    for n in CHAPTER_QUICK:
+        if n < total:
+            rows.append([InlineKeyboardButton(
+                "\U0001f4d6 %d ch\u01b0\u01a1ng \u0111\u1ea7u" % n, callback_data="chap_%d" % n)])
+    rows.append([InlineKeyboardButton(
+        "\U0001f4da T\u1ea5t c\u1ea3 (%d ch\u01b0\u01a1ng)" % total, callback_data="chap_all")])
+    return InlineKeyboardMarkup(rows)
+
+
+def parse_chapter_choice(text, total):
+    """Phan tich lua chon so chuong nguoi dung go tay.
+
+    Tra ve (start, limit): start 1-based, limit = so chuong (0 = het). None neu sai.
+    """
+    t = (text or "").strip().lower()
+    if t in ("all", "t\u1ea5t c\u1ea3", "tat ca", "tatca", "h\u1ebft", "het", "0"):
+        return (1, 0)
+    m = re.match(r"^(\d+)\s*[-\u2013\u2014]\s*(\d+)$", t)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a >= 1 and b >= a:
+            return (a, b - a + 1)
+        return None
+    if t.isdigit():
+        n = int(t)
+        if n >= 1:
+            return (1, n)
+    return None
+
 
 def allowed(update):
     if not ALLOWED:
@@ -177,9 +255,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "\U0001f4da <b>H\u01b0\u1edbng d\u1eabn s\u1eed d\u1ee5ng</b>\n\n"
         "<b>1.</b> G\u00f5 /tts r\u1ed3i g\u1eedi file ebook.\n"
-        "<b>2.</b> Nh\u1eadp <b>t\u00ean truy\u1ec7n</b> (ho\u1eb7c /skip \u0111\u1ec3 d\u00f9ng t\u00ean file).\n"
-        "<b>3.</b> Ch\u1ecdn <b>t\u1ed1c \u0111\u1ed9 \u0111\u1ecdc</b> v\u00e0 <b>\u0111\u1ecbnh d\u1ea1ng</b> audio.\n"
-        "<b>4.</b> Ch\u1edd t\u1ea1o xong v\u00e0 nh\u1eadn link t\u1ea3i v\u1ec1. \u2728\n\n"
+        "<b>2.</b> Ch\u1ecdn <b>s\u1ed1 ch\u01b0\u01a1ng</b> mu\u1ed1n t\u1ea1o (tr\u00e1nh qu\u00e1 t\u1ea3i c\u1ea3 cu\u1ed1n).\n"
+        "<b>3.</b> Nh\u1eadp <b>t\u00ean truy\u1ec7n</b> (ho\u1eb7c /skip \u0111\u1ec3 d\u00f9ng t\u00ean file).\n"
+        "<b>4.</b> Ch\u1ecdn <b>t\u1ed1c \u0111\u1ed9 \u0111\u1ecdc</b> v\u00e0 <b>\u0111\u1ecbnh d\u1ea1ng</b> audio.\n"
+        "<b>5.</b> Ch\u1edd t\u1ea1o xong v\u00e0 nh\u1eadn link t\u1ea3i v\u1ec1. \u2728\n\n"
         "\U0001f4c1 <i>H\u1ed7 tr\u1ee3: .txt, .epub, .pdf, .docx, .zip, .mobi\u2026</i>",
         parse_mode="HTML",
     )
@@ -221,7 +300,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     content = bytes(await tg_file.download_as_bytearray())
 
     chat_id = update.effective_chat.id
-    PENDING[chat_id] = {
+    state = {
         "step": "await_title",
         "filename": name,
         "content": content,
@@ -229,13 +308,24 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "length_scale": "1.0",
         "format": "mp3",
         "install_calibre": "true" if ext in (".mobi", ".azw3", ".azw", ".fb2") else "false",
+        "start": "1",
+        "limit": "0",
     }
+    PENDING[chat_id] = state
     await update.message.reply_text(
         "\u2705 <b>\u0110\u00e3 nh\u1eadn file:</b> <code>%s</code>\n\n"
-        "\U0001f4dd <b>T\u00ean truy\u1ec7n</b> l\u00e0 g\u00ec? Nh\u1eadp t\u00ean, ho\u1eb7c g\u00f5 /skip \u0111\u1ec3 d\u00f9ng: <i>%s</i>"
-        % (html.escape(name), html.escape(os.path.splitext(name)[0])),
+        "\U0001f50e \u0110ang ki\u1ec3m tra s\u1ed1 ch\u01b0\u01a1ng\u2026"
+        % html.escape(name),
         parse_mode="HTML",
     )
+    # Xem truoc so chuong de hoi nguoi dung muon tao bao nhieu (tranh qua tai).
+    info = await probe_chapters(content, name)
+    total = int(info.get("count", 0)) if info else 0
+    if total > 1:
+        state["chapters_total"] = total
+        await _ask_chapters(update, state)
+    else:
+        await _ask_title(chat_id, state, context)
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -257,6 +347,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="HTML",
         )
+        return
+
+    if data.startswith("chap_"):
+        choice = data[len("chap_"):]
+        total = int(state.get("chapters_total", 0))
+        if choice == "all":
+            state["start"], state["limit"] = "1", "0"
+            label = "T\u1ea5t c\u1ea3 (%d ch\u01b0\u01a1ng)" % total
+        else:
+            state["start"], state["limit"] = "1", choice
+            label = "%s ch\u01b0\u01a1ng \u0111\u1ea7u" % choice
+        await query.edit_message_text(
+            "\U0001f4da S\u1ed1 ch\u01b0\u01a1ng: <b>%s</b>" % html.escape(label),
+            parse_mode="HTML",
+        )
+        await _ask_title(chat_id, state, context)
         return
 
     if data in FORMAT_OPTIONS:
@@ -285,6 +391,8 @@ async def run_job(chat_id, state, context):
         "length_scale": state["length_scale"],
         "package": "auto",
         "max_chars": "0",
+        "start": state.get("start", "1"),
+        "limit": state.get("limit", "0"),
         "install_calibre": state["install_calibre"],
     }
 
@@ -355,6 +463,30 @@ async def run_job(chat_id, state, context):
     await context.bot.send_message(chat_id, "\n".join(lines), disable_web_page_preview=True, parse_mode="HTML")
 
 
+async def _ask_chapters(update: Update, state):
+    state["step"] = "await_chapters"
+    total = int(state.get("chapters_total", 0))
+    await update.message.reply_text(
+        "\U0001f4da S\u00e1ch n\u00e0y c\u00f3 <b>%d ch\u01b0\u01a1ng</b>.\n\n"
+        "G\u1eedi c\u1ea3 cu\u1ed1n m\u1ed9t l\u00fac c\u00f3 th\u1ec3 g\u00e2y <b>qu\u00e1 t\u1ea3i</b>. "
+        "B\u1ea1n mu\u1ed1n t\u1ea1o bao nhi\u00eau ch\u01b0\u01a1ng?\n\n"
+        "\U0001f449 Ch\u1ecdn nhanh b\u00ean d\u01b0\u1edbi, ho\u1eb7c nh\u1eadp <b>s\u1ed1</b> (vd <code>20</code>) "
+        "ho\u1eb7c <b>kho\u1ea3ng ch\u01b0\u01a1ng</b> (vd <code>1-30</code>)." % total,
+        reply_markup=chapter_keyboard(total),
+        parse_mode="HTML",
+    )
+
+
+async def _ask_title(chat_id, state, context):
+    state["step"] = "await_title"
+    await context.bot.send_message(
+        chat_id,
+        "\U0001f4dd <b>T\u00ean truy\u1ec7n</b> l\u00e0 g\u00ec? Nh\u1eadp t\u00ean, ho\u1eb7c g\u00f5 /skip \u0111\u1ec3 d\u00f9ng: <i>%s</i>"
+        % html.escape(state.get("title", "")),
+        parse_mode="HTML",
+    )
+
+
 async def _ask_speed(update: Update, chat_id, state):
     state["step"] = "await_speed"
     kb = [[InlineKeyboardButton(lbl, callback_data=key)] for key, (lbl, _) in SPEED_OPTIONS.items()]
@@ -374,14 +506,30 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Nhan van ban khi bot dang cho TEN TRUYEN."""
+    """Nhan van ban khi bot dang cho SO CHUONG hoac TEN TRUYEN."""
     chat_id = update.effective_chat.id
     state = PENDING.get(chat_id)
-    if not state or state.get("step") != "await_title":
+    if not state:
         return
-    title = (update.message.text or "").strip()
-    if title:
-        state["title"] = title
+    text = (update.message.text or "").strip()
+
+    if state.get("step") == "await_chapters":
+        parsed = parse_chapter_choice(text, state.get("chapters_total", 0))
+        if not parsed:
+            await update.message.reply_text(
+                "\u26a0\ufe0f Ch\u01b0a hi\u1ec3u. H\u00e3y nh\u1eadp m\u1ed9t <b>s\u1ed1</b> (vd <code>20</code>) "
+                "ho\u1eb7c m\u1ed9t <b>kho\u1ea3ng</b> (vd <code>1-30</code>), ho\u1eb7c b\u1ea5m n\u00fat b\u00ean tr\u00ean.",
+                parse_mode="HTML",
+            )
+            return
+        state["start"], state["limit"] = str(parsed[0]), str(parsed[1])
+        await _ask_title(chat_id, state, context)
+        return
+
+    if state.get("step") != "await_title":
+        return
+    if text:
+        state["title"] = text
     await _ask_speed(update, chat_id, state)
 
 

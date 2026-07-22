@@ -33,6 +33,14 @@ on:
         description: "Chia nho chuong dai hon N ky tu (0 = khong chia)"
         required: false
         default: "0"
+      start:
+        description: "Chuong bat dau (1-based, mac dinh 1)"
+        required: false
+        default: "1"
+      limit:
+        description: "So chuong toi da tao (0 = tat ca). Dung de tranh qua tai."
+        required: false
+        default: "0"
       install_calibre:
         description: "Cai calibre de doc mobi/azw3/fb2? (true/false)"
         required: false
@@ -80,12 +88,15 @@ jobs:
           if [ -f "$JOB_DIR/job.json" ]; then
             TITLE=$(JQ '.title'); FORMAT=$(JQ '.format'); LEN=$(JQ '.length_scale')
             PKG=$(JQ '.package'); MAXC=$(JQ '.max_chars'); CAL=$(JQ '.install_calibre')
+            START=$(JQ '.start'); LIMIT=$(JQ '.limit')
           fi
           echo "title=${TITLE:-${{ github.event.inputs.title }}}" >> "$GITHUB_OUTPUT"
           echo "format=${FORMAT:-${{ github.event.inputs.format }}}" >> "$GITHUB_OUTPUT"
           echo "length_scale=${LEN:-${{ github.event.inputs.length_scale }}}" >> "$GITHUB_OUTPUT"
           echo "package=${PKG:-${{ github.event.inputs.package }}}" >> "$GITHUB_OUTPUT"
           echo "max_chars=${MAXC:-${{ github.event.inputs.max_chars }}}" >> "$GITHUB_OUTPUT"
+          echo "start=${START:-${{ github.event.inputs.start }}}" >> "$GITHUB_OUTPUT"
+          echo "limit=${LIMIT:-${{ github.event.inputs.limit }}}" >> "$GITHUB_OUTPUT"
           echo "install_calibre=${CAL:-${{ github.event.inputs.install_calibre }}}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Python 3.10
@@ -112,7 +123,9 @@ jobs:
           python pipeline/parse_ebook.py \
             --input "${{ steps.resolve.outputs.input }}" \
             --out-dir chapters \
-            --max-chars "${{ steps.opts.outputs.max_chars }}"
+            --max-chars "${{ steps.opts.outputs.max_chars }}" \
+            --start "${{ steps.opts.outputs.start || '1' }}" \
+            --limit "${{ steps.opts.outputs.limit || '0' }}"
 
       - name: Tao audio theo chuong (Piper)
         run: |
