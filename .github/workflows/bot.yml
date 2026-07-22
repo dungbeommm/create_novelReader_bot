@@ -1,0 +1,65 @@
+name: Telegram Bot (chay tren GitHub theo lich)
+
+# Bot chay trong GitHub Actions: khong can may/VPS, khong can PAT ca nhan.
+# Moi ~5 phut se poll tin nhan Telegram, dan dat hoi thoai, tao audio va Release.
+#
+# CAN cau hinh 1 secret trong repo:
+#   Settings > Secrets and variables > Actions > New repository secret
+#     TELEGRAM_BOT_TOKEN = <token bot tu @BotFather>
+#   (Tuy chon) ALLOWED_USER_IDS = <danh sach user id, ngan cach dau phay>
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # 5 phut/lan (toi thieu cua GitHub)
+  workflow_dispatch: {}      # cho phep bam chay ngay de test
+
+# Khong cho 2 lan poll chay chong len nhau.
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # de tao Release + commit lai state
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Cai goi he thong (espeak-ng, ffmpeg, poppler)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y espeak-ng ffmpeg poppler-utils
+
+      - name: Cai Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r pipeline/requirements-pipeline.txt
+          pip install -r bot/requirements-bot.txt
+
+      - name: Chay bot (poll 1 luot)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python bot/bot_poll.py
+
+      - name: Luu lai trang thai hoi thoai
+        if: ${{ always() }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bot/state 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "bot: cap nhat trang thai poll"
+            git push
+          else
+            echo "Khong co thay doi trang thai."
+          fi
