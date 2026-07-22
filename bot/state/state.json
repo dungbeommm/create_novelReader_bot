@@ -1,14 +1,4 @@
 {
-  "offset": 195557037,
-  "sessions": {
-    "6412935043": {
-      "step": "await_format",
-      "filename": "chuong1.txt",
-      "input_path": "bot/state/uploads/6412935043/chuong1.txt",
-      "title": "Tạo Hóa Chi Vương",
-      "length_scale": "1.0",
-      "format": "mp3",
-      "install_calibre": "false"
-    }
-  }
+  "offset": 195557038,
+  "sessions": {}
 }
