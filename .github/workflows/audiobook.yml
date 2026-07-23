@@ -27,6 +27,9 @@ env:
   RETRY_COUNT: ${{ inputs.retry_count }}
   CONTINUOUS_BATCH_SIZE: "10"
   GH_TOKEN: ${{ github.token }}
+  # Thong tin dang nhap Internet Archive (archive.org/account/s3.php)
+  IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
+  IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
 
 jobs:
   process-next-batch:
@@ -41,6 +44,8 @@ jobs:
         shell: bash
         run: |
           [[ "$JOB_ID" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid job ID"; exit 2; }
+          test -n "$IA_ACCESS_KEY" || { echo "Missing IA_ACCESS_KEY secret"; exit 2; }
+          test -n "$IA_SECRET_KEY" || { echo "Missing IA_SECRET_KEY secret"; exit 2; }
           test -f "jobs/$JOB_ID/job.json" || { echo "Missing job.json"; exit 2; }
           mapfile -d '' books < <(find "jobs/$JOB_ID" -maxdepth 1 -type f ! -name job.json ! -name progress.json -print0)
           [ "${#books[@]}" -eq 1 ] || { echo "Expected exactly one ebook"; exit 2; }
@@ -80,21 +85,36 @@ jobs:
             --job-dir "jobs/$JOB_ID" --ebook "$EBOOK_PATH" \
             --parser pipeline/parse_ebook.py
 
-      - name: Parse selected chapters
+      - name: Skip batch already on Internet Archive
         if: env.ALREADY_COMPLETE != 'true'
+        shell: bash
+        run: |
+          prefix="${JOB_ID}_chapters_${BATCH_START}-${BATCH_END}."
+          existing="$(python pipeline/ia_upload.py find-batch \
+            --identifier "$IA_IDENTIFIER" --prefix "$prefix")"
+          if [ -n "$existing" ]; then
+            echo "Batch da co tren item ($existing) -> bo qua parse/synth/upload."
+            echo "BATCH_ALREADY_UPLOADED=true" >> "$GITHUB_ENV"
+            echo "BATCH_ASSET_NAME=$existing" >> "$GITHUB_ENV"
+          else
+            echo "BATCH_ALREADY_UPLOADED=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Parse selected chapters
+        if: env.ALREADY_COMPLETE != 'true' && env.BATCH_ALREADY_UPLOADED != 'true'
         run: |
           python pipeline/parse_ebook.py --input "$EBOOK_PATH" --out-dir chapters \
             --start "$BATCH_START" --limit "$BATCH_LIMIT"
 
       - name: Synthesize selected chapters
-        if: env.ALREADY_COMPLETE != 'true'
+        if: env.ALREADY_COMPLETE != 'true' && env.BATCH_ALREADY_UPLOADED != 'true'
         run: |
           python pipeline/batch_tts.py --chapters-dir chapters --out-dir release \
             --title "$BOOK_TITLE" --format "$AUDIO_FORMAT" \
             --length-scale "$LENGTH_SCALE" --package zip --batch-size 0
 
       - name: Prepare persistent asset
-        if: env.ALREADY_COMPLETE != 'true'
+        if: env.ALREADY_COMPLETE != 'true' && env.BATCH_ALREADY_UPLOADED != 'true'
         shell: bash
         run: |
           mapfile -d '' files < <(find release -maxdepth 1 -type f ! -name summary.json ! -name '*.sha256' -print0)
@@ -110,20 +130,23 @@ jobs:
           echo "BATCH_ASSET=$asset" >> "$GITHUB_ENV"
           echo "BATCH_ASSET_NAME=$(basename "$asset")" >> "$GITHUB_ENV"
 
-      - name: Create draft release and upload batch
-        if: env.ALREADY_COMPLETE != 'true'
+      - name: Upload batch to Internet Archive
+        if: env.ALREADY_COMPLETE != 'true' && env.BATCH_ALREADY_UPLOADED != 'true'
         shell: bash
         run: |
-          tag="audiobook-$JOB_ID"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --draft --title "Audiobook $BOOK_TITLE" \
-              --notes "Processing automatically. Completed batches will appear here."
+          args=(pipeline/ia_upload.py upload
+            --identifier "$IA_IDENTIFIER"
+            --file "$BATCH_ASSET"
+            --name "$BATCH_ASSET_NAME")
+          if [ "$IA_FIRST_UPLOAD" = "true" ]; then
+            args+=(--make-bucket
+              --title "$BOOK_TITLE"
+              --creator "$IA_CREATOR"
+              --language "$IA_LANGUAGE"
+              --description "Audiobook '$BOOK_TITLE' tao boi Piper TTS (giong Ngoc Huyen).")
           fi
-          for attempt in 1 2 3; do
-            gh release upload "$tag" "$BATCH_ASSET" --clobber && exit 0
-            sleep $((attempt * 10))
-          done
-          exit 1
+          python "${args[@]}"
+          echo "Item: $IA_ITEM_URL"
 
       - name: Save checkpoint
         if: env.ALREADY_COMPLETE != 'true'
@@ -151,13 +174,14 @@ jobs:
           gh workflow run audiobook.yml --ref "$GITHUB_REF_NAME" \
             -f job_id="$JOB_ID" -f retry_count=0
 
-      - name: Publish completed release
+      - name: Finalize Internet Archive item
         if: env.JOB_COMPLETE == 'true' || env.ALREADY_COMPLETE == 'true'
         shell: bash
         run: |
-          tag="audiobook-$JOB_ID"
-          gh release edit "$tag" --draft=false \
-            --notes-file "jobs/$JOB_ID/progress.json"
+          python pipeline/ia_upload.py finalize \
+            --identifier "$IA_IDENTIFIER" \
+            --progress "jobs/$JOB_ID/progress.json"
+          echo "Audiobook hoan tat: $IA_ITEM_URL"
 
       - name: Clean completed job
         if: env.JOB_COMPLETE == 'true' || env.ALREADY_COMPLETE == 'true'
@@ -172,7 +196,7 @@ jobs:
             git pull --rebase --autostash origin "$GITHUB_REF_NAME" && git push && exit 0
             sleep $((attempt * 5))
           done
-          echo "Release is complete; deferred repository cleanup" >&2
+          echo "Job is complete; deferred repository cleanup" >&2
 
       - name: Retry failed batch automatically
         if: failure()

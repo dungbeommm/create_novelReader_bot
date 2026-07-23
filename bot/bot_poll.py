@@ -4,11 +4,12 @@ Khac voi telegram_bot.py (chay lien tuc tren may/VPS), file nay chay theo dot:
 moi lan GitHub Actions kich hoat (cron ~5 phut/lan), no se:
   1. Poll tin nhan moi tu Telegram (getUpdates + offset luu trong repo).
   2. Dan dat hoi thoai: /tts -> gui file -> hoi ten truyen -> chon toc do/dinh dang.
-  3. Voi job da du thong tin ("ready"): chay parse_ebook + batch_tts NGAY trong
-     cung lan chay nay, tao GitHub Release, roi nhan tin bao hoan thanh + link.
+  3. Voi job da du thong tin ("ready"): kich hoat workflow audiobook.yml -> audio
+     duoc dang len archive.org, roi nhan tin bao hoan thanh + link item.
 
 Uu diem: KHONG can GitHub token ca nhan (PAT). Trong Actions da co san
-GITHUB_TOKEN de tao Release. Chi can 1 secret: TELEGRAM_BOT_TOKEN.
+GITHUB_TOKEN. Can them 2 secret: IA_ACCESS_KEY, IA_SECRET_KEY (archive.org)
+va TELEGRAM_BOT_TOKEN.
 
 Han che (do dac thu GitHub Actions):
   - Do tre moi buoc hoi thoai ~ chu ky cron (toi da vai phut/lan tra loi).
@@ -29,6 +30,11 @@ import sys
 import time
 
 import requests
+
+# Cho phep import module IA (pipeline/ia_upload.py) de tinh identifier tat dinh.
+sys.path.insert(0, os.path.join(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..")), "pipeline"))
+from ia_upload import make_identifier, item_details_url, is_item_complete  # noqa: E402
 
 # ------------------------------------------------------------ config / env
 
@@ -205,35 +211,6 @@ def save_state(state):
 
 def allowed(user_id):
     return (not ALLOWED) or (user_id in ALLOWED)
-
-
-# ------------------------------------------------------------ github release
-
-def create_release_with_assets(tag, name, body, files):
-    base = "%s/repos/%s" % (GH_API, GH_REPO)
-    r = requests.post(
-        base + "/releases",
-        headers=GH_HEADERS,
-        json={"tag_name": tag, "name": name, "body": body[:5000]},
-        timeout=60,
-    )
-    if r.status_code not in (200, 201):
-        r = requests.get(base + "/releases/tags/" + tag, headers=GH_HEADERS, timeout=30)
-    r.raise_for_status()
-    rel = r.json()
-    upload_url = rel.get("upload_url", "").split("{")[0]
-    for fp in files:
-        with open(fp, "rb") as f:
-            data = f.read()
-        uh = dict(GH_HEADERS)
-        uh["Content-Type"] = "application/octet-stream"
-        upload = requests.post(upload_url, headers=uh,
-                               params={"name": os.path.basename(fp)}, data=data,
-                               timeout=300)
-        upload.raise_for_status()
-    # Lay lai release de co danh sach assets day du.
-    r2 = requests.get(base + "/releases/tags/" + tag, headers=GH_HEADERS, timeout=30)
-    return r2.json() if r2.status_code == 200 else rel
 
 
 # ------------------------------------------------------------ handlers
@@ -471,14 +448,10 @@ def dispatch_continuous_job(job_id):
     response.raise_for_status()
 
 
-def get_published_release(tag):
-    response = requests.get(
-        "%s/repos/%s/releases/tags/%s" % (GH_API, GH_REPO, tag),
-        headers=GH_HEADERS, timeout=30,
-    )
-    if response.status_code == 200:
-        release = response.json()
-        return release if not release.get("draft", False) else None
+def get_completed_item(identifier):
+    """Tra ve details URL neu item archive.org da co danh dau hoan tat."""
+    if identifier and is_item_complete(identifier):
+        return item_details_url(identifier)
     return None
 
 
@@ -490,6 +463,7 @@ def process_ready_job(skey, sess):
     job_dir = os.path.join(REPO_ROOT, "jobs", job_id)
     os.makedirs(job_dir, exist_ok=True)
     ebook_path = os.path.join(job_dir, os.path.basename(sess["filename"]))
+    identifier = make_identifier(sess["title"], job_id)
     options = {
         "title": sess["title"],
         "format": sess["format"],
@@ -497,6 +471,7 @@ def process_ready_job(skey, sess):
         "start": sess.get("start", "1"),
         "limit": sess.get("limit", "0"),
         "continuous_batch_size": "10",
+        "ia_identifier": identifier,
     }
     try:
         shutil.copy2(input_abs, ebook_path)
@@ -519,26 +494,28 @@ def process_ready_job(skey, sess):
     sess.pop("input_path", None)
     sess["step"] = "waiting_release"
     sess["job_id"] = job_id
-    sess["release_tag"] = "audiobook-%s" % job_id
+    sess["ia_identifier"] = identifier
+    sess["ia_item_url"] = item_details_url(identifier)
     sess["started_at"] = dt.datetime.utcnow().isoformat() + "Z"
     send(chat_id,
          "\u2705 Job <code>%s</code> \u0111\u00e3 b\u1eaft \u0111\u1ea7u. Bot s\u1ebd t\u1ef1 chia batch, "
-         "t\u1ef1 ch\u1ea1y ti\u1ebfp v\u00e0 b\u00e1o khi to\u00e0n b\u1ed9 ho\u00e0n t\u1ea5t."
-         % html.escape(job_id))
+         "t\u1ef1 ch\u1ea1y ti\u1ebfp v\u00e0 \u0111\u0103ng d\u1ea7n l\u00ean archive.org.\n\n"
+         "\U0001f517 <b>Link (c\u1eadp nh\u1eadt d\u1ea7n khi x\u1eed l\u00fd):</b>\n%s\n\n"
+         "<i>M\u00ecnh s\u1ebd b\u00e1o l\u1ea1i khi to\u00e0n b\u1ed9 ho\u00e0n t\u1ea5t.</i>"
+         % (html.escape(job_id), item_details_url(identifier)))
     return True
 
 
 def check_waiting_job(skey, sess):
-    release = get_published_release(sess.get("release_tag", ""))
-    if not release:
+    item_url = get_completed_item(sess.get("ia_identifier", ""))
+    if not item_url:
         return False
     chat_id = sess.get("chat_id") or int(skey)
     send(chat_id,
          "\U0001f389 <b>Truy\u1ec7n: %s \u0111\u00e3 ho\u00e0n th\u00e0nh!</b>\n\n"
-         "\U0001f4e6 S\u1ed1 batch: <b>%d</b>\n"
-         "\U0001f517 <b>Link t\u1ea3i:</b>\n%s"
-         % (html.escape(sess.get("title", "Audiobook")),
-            len(release.get("assets", [])), release.get("html_url", "")))
+         "\U0001f4da \u0110\u00e3 \u0111\u0103ng to\u00e0n b\u1ed9 l\u00ean Internet Archive.\n"
+         "\U0001f517 <b>Link t\u1ea3i / nghe:</b>\n%s"
+         % (html.escape(sess.get("title", "Audiobook")), item_url))
     return True
 
 

@@ -30,16 +30,19 @@ File workflow nam o `.github/workflows/tts.yml`.
    - **text**: van ban tieng Viet can doc.
    - **filename**: ten file (khong can `.wav`).
    - **length_scale**: toc do (mac dinh 1.0, lon hon = cham hon).
-   - **make_release**: `true` de tao link tai co dinh.
+   - **upload_ia**: `true` de tu dong dang len archive.org (link tai co dinh, chia se duoc).
 4. Bam **Run workflow** va cho ~2-4 phut.
 
 ### Lay file audio
 - **Cach A - Artifact:** mo lan chay vua xong -> keo xuong muc **Artifacts** -> tai file `.wav` (can dang nhap GitHub).
-- **Cach B - Release (co link co dinh):** neu `make_release = true`, vao tab **Releases** cua repo, moi lan chay tao 1 release kem file `.wav` co **link tai truc tiep, chia se duoc**.
+- **Cach B - archive.org (co link cong khai):** neu `upload_ia = true`, file duoc dang len https://archive.org/details/<identifier> voi **link tai/nghe truc tiep, chia se duoc** (khong can dang nhap). Link hien o phan Summary cua lan chay.
+
+> Can dat truoc 2 GitHub Secrets `IA_ACCESS_KEY` va `IA_SECRET_KEY` (lay tai
+> https://archive.org/account/s3.php). Xem muc **Cai dat archive.org** ben duoi.
 
 ### Chay bang dong lenh (tuy chon)
 ```bash
-gh workflow run tts.yml -f text="Xin chao cac ban" -f filename=hello -f make_release=true
+gh workflow run tts.yml -f text="Xin chao cac ban" -f filename=hello -f upload_ia=true
 ```
 
 ---
@@ -90,16 +93,22 @@ piper-tts-service/
 # 4. Ebook -> Audiobook tu dong (Telegram + GitHub Actions)
 
 Ngoai cach nhap text ngan o tren, project da them **pipeline chuyen ca cuon ebook
-thanh audiobook theo tung chuong**, dieu khien qua bot Telegram.
+thanh audiobook theo tung chuong**, dieu khien qua bot Telegram. **Toan bo audio
+duoc tu dong dang len Internet Archive (archive.org)** thay vi GitHub Release.
 
 ## Luong hoat dong
 ```
 Nguoi dung --(gui file + chon option)--> Bot Telegram
    -> Bot day file + job.json len GitHub (jobs/<job_id>/)
    -> Workflow audiobook.yml: tach chuong -> Piper TTS -> convert -> dong goi
-   -> Tao GitHub Release (link tai co dinh)
-   -> Bot gui lai link Release
+   -> Dang tung batch len archive.org (1 audiobook = 1 item)
+   -> Khi xong ghi _COMPLETE.json len item
+   -> Bot gui lai link https://archive.org/details/<identifier>
 ```
+
+Moi audiobook la mot **item archive.org** voi identifier **tat dinh** (sinh tu
+tieu de + job_id), nen bot biet truoc link va gui ngay khi bat dau; link se day
+noi dung dan khi tung batch hoan tat.
 
 ## Cau truc bo sung
 ```
@@ -107,14 +116,39 @@ pipeline/
   parse_ebook.py              # Tach ebook (txt/epub/zip/mobi/pdf/docx...) -> chuong
   batch_tts.py                # TTS tung chuong + convert (mp3/wav/m4b) + zip
   requirements-pipeline.txt   # ebooklib, bs4, python-docx, pdfplumber...
+pipeline/
+  ia_upload.py                # Dang tai len archive.org (IAS3) + sinh identifier
 .github/workflows/
-  audiobook.yml               # Workflow nhan file ebook -> Release
+  audiobook.yml               # Workflow nhan file ebook -> archive.org
 bot/
   telegram_bot.py             # Bot Telegram
   requirements-bot.txt
   .env.example
   README.md                   # Huong dan cai bot
 jobs/                         # Noi bot dat file cho xu ly (tu xoa sau khi xong)
+```
+
+## Cai dat archive.org (bat buoc)
+1. Dang nhap https://archive.org roi mo https://archive.org/account/s3.php de lay
+   **access key** va **secret key** (IAS3).
+2. Vao repo GitHub -> **Settings > Secrets and variables > Actions > New repository secret**,
+   them 2 secret:
+   - `IA_ACCESS_KEY`
+   - `IA_SECRET_KEY`
+3. Xong. Workflow `audiobook.yml` / `tts.yml` se tu dung 2 secret nay de dang tai.
+
+> Mac dinh item duoc dang vao collection cong khai `opensource_audio`, mediatype
+> `audio`, ngon ngu `vie`. Co the doi qua bien moi truong `IA_DEFAULT_COLLECTION`
+> hoac tham so CLI cua `pipeline/ia_upload.py`.
+
+## Dang tai thu cong bang ia_upload.py (tuy chon)
+```bash
+export IA_ACCESS_KEY=... IA_SECRET_KEY=...
+# Upload 1 file va tao item moi:
+python pipeline/ia_upload.py upload --identifier my-audiobook --file batch.zip \
+    --make-bucket --title "Ten Truyen" --language vie
+# Xem trang thai item:
+python pipeline/ia_upload.py status --identifier my-audiobook
 ```
 
 ## Chay thu pipeline (local, khong can bot)

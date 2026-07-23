@@ -1,5 +1,5 @@
 """Bot Telegram: nhan file ebook -> day len GitHub -> kich hoat workflow
--> theo doi -> gui link GitHub Release.
+-> theo doi -> gui link Internet Archive (archive.org).
 
 Cau hinh qua bien moi truong (xem .env.example):
   TELEGRAM_BOT_TOKEN   token cua bot Telegram (@BotFather)
@@ -21,12 +21,18 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 import datetime as dt
 import secrets
 
 import requests
+
+# Import module IA de tinh identifier tat dinh + kiem tra hoan tat.
+sys.path.insert(0, os.path.join(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..")), "pipeline"))
+from ia_upload import make_identifier, item_details_url, is_item_complete  # noqa: E402
 from telegram import (
     BotCommand,
     InlineKeyboardButton,
@@ -129,21 +135,12 @@ def gh_wait_run(run_id, timeout=3600):
     return "timed_out"
 
 
-def gh_get_release(tag):
-    url = "%s/repos/%s/releases/tags/%s" % (GH_API, GH_REPO, tag)
-    r = requests.get(url, headers=GH_HEADERS, timeout=30)
-    if r.status_code == 200:
-        return r.json()
-    return None
-
-
-def gh_wait_published_release(tag, timeout=30 * 24 * 3600):
-    """Wait across the chained workflow runs until the draft is published."""
+def wait_ia_complete(identifier, timeout=30 * 24 * 3600):
+    """Cho den khi item archive.org duoc danh dau hoan tat (_COMPLETE.json)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        release = gh_get_release(tag)
-        if release and not release.get("draft", False):
-            return release
+        if is_item_complete(identifier):
+            return item_details_url(identifier)
         time.sleep(30)
     return None
 
@@ -397,6 +394,7 @@ async def run_job(chat_id, state, context):
     job_dir = "jobs/%s" % job_id
     since_iso = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
+    identifier = make_identifier(state["title"], job_id)
     opts = {
         "title": state["title"],
         "format": state["format"],
@@ -407,6 +405,7 @@ async def run_job(chat_id, state, context):
         "limit": state.get("limit", "0"),
         "batch_size": state.get("batch_size", "0"),
         "install_calibre": state["install_calibre"],
+        "ia_identifier": identifier,
     }
 
     try:
@@ -427,28 +426,30 @@ async def run_job(chat_id, state, context):
         await context.bot.send_message(chat_id, "\u274c L\u1ed7i khi \u0111\u1ea9y l\u00ean GitHub: %s" % html.escape(str(e)))
         return
 
+    item_url = item_details_url(identifier)
     await context.bot.send_message(
         chat_id,
         "\u23f3 <b>\u0110ang t\u1ea1o audio cho truy\u1ec7n:</b> %s\n"
-        "<i>(\u0111ang ch\u1ea1y tr\u00ean GitHub Actions, c\u00f3 th\u1ec3 m\u1ea5t v\u00e0i ph\u00fat\u2026)</i>"
-        % html.escape(state["title"]),
+        "<i>(\u0111ang ch\u1ea1y tr\u00ean GitHub Actions, \u0111\u0103ng d\u1ea7n l\u00ean archive.org\u2026)</i>\n\n"
+        "\U0001f517 <b>Link (c\u1eadp nh\u1eadt d\u1ea7n):</b>\n%s"
+        % (html.escape(state["title"]), item_url),
         parse_mode="HTML",
+        disable_web_page_preview=True,
     )
 
-    # 3. Chained runs publish the release only after every batch is complete.
-    tag = "audiobook-%s" % job_id
-    rel = await asyncio.to_thread(gh_wait_published_release, tag)
-    if not rel:
+    # 3. Item archive.org duoc danh dau hoan tat sau khi TAT CA batch xong.
+    done_url = await asyncio.to_thread(wait_ia_complete, identifier)
+    if not done_url:
         await context.bot.send_message(chat_id, "\u274c Qu\u00e1 th\u1eddi gian ch\u1edd chu\u1ed7i x\u1eed l\u00fd. H\u00e3y ki\u1ec3m tra tab Actions.")
         return
     title_html = html.escape(state["title"])
     lines = [
         "\U0001f389 <b>Truy\u1ec7n: %s \u0111\u00e3 ho\u00e0n th\u00e0nh!</b>" % title_html,
         "",
-        "\U0001f4e6 <b>S\u1ed1 batch:</b> %d" % len(rel.get("assets", [])),
+        "\U0001f4da \u0110\u00e3 \u0111\u0103ng to\u00e0n b\u1ed9 l\u00ean Internet Archive.",
         "",
-        "\U0001f517 <b>Link t\u1ea3i:</b>",
-        rel["html_url"],
+        "\U0001f517 <b>Link t\u1ea3i / nghe:</b>",
+        done_url,
     ]
     await context.bot.send_message(chat_id, "\n".join(lines), disable_web_page_preview=True, parse_mode="HTML")
 

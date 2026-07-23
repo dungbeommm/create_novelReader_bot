@@ -5,6 +5,9 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ia_upload import make_identifier, item_details_url  # noqa: E402
+
 
 def atomic_json(path, value):
     tmp = path + ".tmp"
@@ -69,9 +72,12 @@ def plan(args):
         if configured_batch <= 0:
             configured_batch = as_int(os.environ.get("CONTINUOUS_BATCH_SIZE"), 20)
         configured_batch = min(50, max(1, configured_batch))
+        job_id = os.path.basename(job_dir.rstrip("/"))
+        title = options.get("title") or "audiobook"
+        identifier = options.get("ia_identifier") or make_identifier(title, job_id)
         progress = {
             "version": 1,
-            "title": options.get("title") or "audiobook",
+            "title": title,
             "format": options.get("format") or "mp3",
             "length_scale": str(options.get("length_scale") or "1.0"),
             "requested_start": requested_start,
@@ -81,8 +87,23 @@ def plan(args):
             "batch_size": configured_batch,
             "completed_batches": [],
             "status": "processing",
+            "ia_identifier": identifier,
+            "ia_item_url": item_details_url(identifier),
+            "language": options.get("language") or "vie",
+            "creator": options.get("creator") or "Piper TTS (Ngoc Huyen)",
             "cleaning": info.get("cleaning", {}),
         }
+        atomic_json(progress_path, progress)
+
+    # Bao dam item luon co identifier (voi progress cu chua co truong nay).
+    identifier = progress.get("ia_identifier")
+    if not identifier:
+        identifier = make_identifier(
+            progress.get("title", "audiobook"),
+            os.path.basename(job_dir.rstrip("/")),
+        )
+        progress["ia_identifier"] = identifier
+        progress["ia_item_url"] = item_details_url(identifier)
         atomic_json(progress_path, progress)
 
     start = as_int(progress.get("next_chapter"), 1)
@@ -90,10 +111,16 @@ def plan(args):
     if progress.get("status") == "complete" or start > final_chapter:
         progress["status"] = "complete"
         atomic_json(progress_path, progress)
-        write_env({"ALREADY_COMPLETE": "true"})
+        write_env({
+            "ALREADY_COMPLETE": "true",
+            "IA_IDENTIFIER": identifier,
+            "IA_ITEM_URL": progress.get("ia_item_url", item_details_url(identifier)),
+            "BOOK_TITLE": progress.get("title", "audiobook"),
+        })
         return
     count = min(as_int(progress.get("batch_size"), 20), final_chapter - start + 1)
     end = start + count - 1
+    first_upload = "true" if not progress.get("completed_batches") else "false"
     write_env({
         "ALREADY_COMPLETE": "false",
         "BATCH_START": start,
@@ -103,8 +130,14 @@ def plan(args):
         "BOOK_TITLE": progress.get("title", "audiobook"),
         "AUDIO_FORMAT": progress.get("format", "mp3"),
         "LENGTH_SCALE": progress.get("length_scale", "1.0"),
+        "IA_IDENTIFIER": identifier,
+        "IA_ITEM_URL": progress.get("ia_item_url", item_details_url(identifier)),
+        "IA_FIRST_UPLOAD": first_upload,
+        "IA_LANGUAGE": progress.get("language", "vie"),
+        "IA_CREATOR": progress.get("creator", "Piper TTS (Ngoc Huyen)"),
     })
-    print("Planned chapters %d-%d of %d" % (start, end, final_chapter))
+    print("Planned chapters %d-%d of %d -> archive.org item %s"
+          % (start, end, final_chapter, identifier))
 
 
 def advance(args):
