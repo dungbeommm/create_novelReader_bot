@@ -1,22 +1,4 @@
 {
   "offset": 195557098,
-  "sessions": {
-    "6412935043": {
-      "step": "waiting_release",
-      "filename": "12553-tien-lo-tranh-phong-thuviensach.vn.epub",
-      "title": "Tiên Lộ Tranh Phong",
-      "length_scale": "1.0",
-      "format": "mp3",
-      "install_calibre": "false",
-      "start": "1",
-      "limit": "100",
-      "batch_size": "0",
-      "chapters_total": 187,
-      "chat_id": 6412935043,
-      "job_id": "20260723-051047-9808",
-      "ia_identifier": "tien-lo-tranh-phong-20260723-051047-9808",
-      "ia_item_url": "https://archive.org/details/tien-lo-tranh-phong-20260723-051047-9808",
-      "started_at": "2026-07-23T05:10:50.967081Z"
-    }
-  }
+  "sessions": {}
 }
