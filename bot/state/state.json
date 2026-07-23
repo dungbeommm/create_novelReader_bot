@@ -1,8 +1,8 @@
 {
-  "offset": 195557103,
+  "offset": 195557104,
   "sessions": {
     "6412935043": {
-      "step": "await_speed",
+      "step": "await_format",
       "filename": "12553-tien-lo-tranh-phong-thuviensach.vn.epub",
       "input_path": "bot/state/uploads/6412935043/12553-tien-lo-tranh-phong-thuviensach.vn.epub",
       "title": "Tiên Lộ Tranh Phong",
