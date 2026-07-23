@@ -1,17 +1,21 @@
 {
-  "offset": 195557090,
+  "offset": 195557091,
   "sessions": {
     "6412935043": {
-      "step": "await_format",
+      "step": "waiting_release",
       "filename": "Tien Lo Tranh Phong - Duyen Phan.mobi",
-      "input_path": "bot/state/uploads/6412935043/Tien Lo Tranh Phong - Duyen Phan.mobi",
       "title": "Tiên Lộ Tranh Phong",
       "length_scale": "1.0",
       "format": "mp3",
       "install_calibre": "true",
       "start": "1",
       "limit": "0",
-      "batch_size": "0"
+      "batch_size": "0",
+      "chat_id": 6412935043,
+      "job_id": "20260723-045921-7a72",
+      "ia_identifier": "tien-lo-tranh-phong-20260723-045921-7a72",
+      "ia_item_url": "https://archive.org/details/tien-lo-tranh-phong-20260723-045921-7a72",
+      "started_at": "2026-07-23T04:59:26.942837Z"
     }
   }
 }
