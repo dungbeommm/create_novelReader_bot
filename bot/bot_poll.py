@@ -470,7 +470,7 @@ def process_ready_job(skey, sess):
         "length_scale": sess["length_scale"],
         "start": sess.get("start", "1"),
         "limit": sess.get("limit", "0"),
-        "continuous_batch_size": "10",
+        "continuous_batch_size": "20",
         "ia_identifier": identifier,
     }
     try:

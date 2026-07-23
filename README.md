@@ -114,7 +114,7 @@ noi dung dan khi tung batch hoan tat.
 ```
 pipeline/
   parse_ebook.py              # Tach ebook (txt/epub/zip/mobi/pdf/docx...) -> chuong
-  batch_tts.py                # TTS tung chuong + convert (mp3/wav/m4b) + zip
+  batch_tts.py                # TTS tung chuong + convert (mp3/wav/m4b); ghep <=20 chuong/1 file
   requirements-pipeline.txt   # ebooklib, bs4, python-docx, pdfplumber...
 pipeline/
   ia_upload.py                # Dang tai len archive.org (IAS3) + sinh identifier
@@ -144,12 +144,20 @@ jobs/                         # Noi bot dat file cho xu ly (tu xoa sau khi xong)
 ## Dang tai thu cong bang ia_upload.py (tuy chon)
 ```bash
 export IA_ACCESS_KEY=... IA_SECRET_KEY=...
-# Upload 1 file va tao item moi:
-python pipeline/ia_upload.py upload --identifier my-audiobook --file batch.zip \
-    --make-bucket --title "Ten Truyen" --language vie
-# Xem trang thai item:
+# Upload TUNG file audio trong 1 thu muc (khong zip) + tao item moi:
+python pipeline/ia_upload.py upload-dir --identifier my-audiobook --dir release \
+    --make-bucket --title "Ten Truyen" --creator "Piper TTS" --language vie
+#   -> chay lai an toan: file da co tren item se tu dong bi bo qua.
+# Hoac upload 1 file don le:
+python pipeline/ia_upload.py upload --identifier my-audiobook --file chuong_001.mp3
+# Xem trang thai item (liet ke tat ca file):
 python pipeline/ia_upload.py status --identifier my-audiobook
 ```
+
+> Workflow tu dong **ghep toi da 20 chuong thanh 1 file audio lien tuc** (khong
+> nen zip), dat ten `chuong_00001-00020.<ext>` theo dai chuong toan cuc de giu
+> dung thu tu tren archive.org. Batch cuoi cung it hon 20 chuong se ghep phan
+> con lai cho den het.
 
 ## Chay thu pipeline (local, khong can bot)
 ```bash
@@ -168,7 +176,7 @@ python pipeline/batch_tts.py --chapters-dir chapters --out-dir release \
 ## Tuy chon
 - **length_scale**: toc do doc (0.9 nhanh ... 1.3 rat cham).
 - **format**: `mp3` (mac dinh), `wav`, `m4b` (audiobook co chapter marks), `ogg`, `opus`.
-- **package**: `auto` (tu zip khi nhieu file), `zip`, `single`, `files`.
+- **package**: `auto` (tu zip khi nhieu file), `zip`, `single`, `files`, `merge` (ghep tat ca chuong thanh 1 file, dung cho upload archive.org).
 - **max_chars**: chia nho chuong dai (0 = khong chia).
 
 Xem `bot/README.md` de cai va chay bot Telegram.

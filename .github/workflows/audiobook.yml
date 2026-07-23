@@ -25,7 +25,7 @@ concurrency:
 env:
   JOB_ID: ${{ inputs.job_id }}
   RETRY_COUNT: ${{ inputs.retry_count }}
-  CONTINUOUS_BATCH_SIZE: "10"
+  CONTINUOUS_BATCH_SIZE: "20"
   GH_TOKEN: ${{ github.token }}
   # Thong tin dang nhap Internet Archive (archive.org/account/s3.php)
   IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
@@ -89,13 +89,17 @@ jobs:
         if: env.ALREADY_COMPLETE != 'true'
         shell: bash
         run: |
-          prefix="${JOB_ID}_chapters_${BATCH_START}-${BATCH_END}."
+          # Moi batch (toi da 20 chuong) duoc GHEP thanh 1 file audio lien tuc,
+          # dat ten theo dai chuong toan cuc: chuong_00001-00020.<ext>. Neu file
+          # ghep cua batch da co tren item thi batch da upload xong -> bo qua
+          # parse/synth/upload (idempotency).
+          stem="chuong_$(printf '%05d-%05d' "$BATCH_START" "$BATCH_END")"
+          echo "MERGE_STEM=$stem" >> "$GITHUB_ENV"
           existing="$(python pipeline/ia_upload.py find-batch \
-            --identifier "$IA_IDENTIFIER" --prefix "$prefix")"
+            --identifier "$IA_IDENTIFIER" --prefix "${stem}.")"
           if [ -n "$existing" ]; then
-            echo "Batch da co tren item ($existing) -> bo qua parse/synth/upload."
+            echo "Batch da co tren item (vd $existing) -> bo qua parse/synth/upload."
             echo "BATCH_ALREADY_UPLOADED=true" >> "$GITHUB_ENV"
-            echo "BATCH_ASSET_NAME=$existing" >> "$GITHUB_ENV"
           else
             echo "BATCH_ALREADY_UPLOADED=false" >> "$GITHUB_ENV"
           fi
@@ -106,38 +110,23 @@ jobs:
           python pipeline/parse_ebook.py --input "$EBOOK_PATH" --out-dir chapters \
             --start "$BATCH_START" --limit "$BATCH_LIMIT"
 
-      - name: Synthesize selected chapters
+      - name: Synthesize and merge batch
         if: env.ALREADY_COMPLETE != 'true' && env.BATCH_ALREADY_UPLOADED != 'true'
         run: |
+          # Tong hop toi da 20 chuong roi GHEP thanh 1 file audio lien tuc,
+          # dat ten theo dai chuong toan cuc ($MERGE_STEM, vd chuong_00001-00020).
           python pipeline/batch_tts.py --chapters-dir chapters --out-dir release \
             --title "$BOOK_TITLE" --format "$AUDIO_FORMAT" \
-            --length-scale "$LENGTH_SCALE" --package zip --batch-size 0
+            --length-scale "$LENGTH_SCALE" --package merge \
+            --merge-name "$MERGE_STEM" --batch-size 0
 
-      - name: Prepare persistent asset
+      - name: Upload merged audio to Internet Archive
         if: env.ALREADY_COMPLETE != 'true' && env.BATCH_ALREADY_UPLOADED != 'true'
         shell: bash
         run: |
-          mapfile -d '' files < <(find release -maxdepth 1 -type f ! -name summary.json ! -name '*.sha256' -print0)
-          [ "${#files[@]}" -gt 0 ] || { echo "No output assets"; exit 3; }
-          if [ "${#files[@]}" -gt 1 ]; then
-            asset="release/${JOB_ID}_chapters_${BATCH_START}-${BATCH_END}.zip"
-            zip -j "$asset" "${files[@]}"
-          else
-            ext="${files[0]##*.}"
-            asset="release/${JOB_ID}_chapters_${BATCH_START}-${BATCH_END}.${ext}"
-            mv "${files[0]}" "$asset"
-          fi
-          echo "BATCH_ASSET=$asset" >> "$GITHUB_ENV"
-          echo "BATCH_ASSET_NAME=$(basename "$asset")" >> "$GITHUB_ENV"
-
-      - name: Upload batch to Internet Archive
-        if: env.ALREADY_COMPLETE != 'true' && env.BATCH_ALREADY_UPLOADED != 'true'
-        shell: bash
-        run: |
-          args=(pipeline/ia_upload.py upload
+          args=(pipeline/ia_upload.py upload-dir
             --identifier "$IA_IDENTIFIER"
-            --file "$BATCH_ASSET"
-            --name "$BATCH_ASSET_NAME")
+            --dir release)
           if [ "$IA_FIRST_UPLOAD" = "true" ]; then
             args+=(--make-bucket
               --title "$BOOK_TITLE"
@@ -146,13 +135,15 @@ jobs:
               --description "Audiobook '$BOOK_TITLE' tao boi Piper TTS (giong Ngoc Huyen).")
           fi
           python "${args[@]}"
+          rm -rf release chapters
           echo "Item: $IA_ITEM_URL"
 
       - name: Save checkpoint
         if: env.ALREADY_COMPLETE != 'true'
         run: |
           python pipeline/continuous_job.py advance --job-dir "jobs/$JOB_ID" \
-            --start "$BATCH_START" --end "$BATCH_END" --asset "$BATCH_ASSET_NAME"
+            --start "$BATCH_START" --end "$BATCH_END" \
+            --asset "chuong_${BATCH_START}-${BATCH_END}"
 
       - name: Push checkpoint
         if: env.ALREADY_COMPLETE != 'true'

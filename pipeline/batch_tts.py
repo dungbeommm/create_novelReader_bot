@@ -171,6 +171,45 @@ def convert_audio(in_wav, out_path, fmt):
     )
 
 
+def concat_audio(files, out_path, fmt):
+    """Noi (ghep) nhieu file audio cung dinh dang thanh 1 file lien tuc.
+
+    Giu dung thu tu chuong. Re-encode de tranh loi param khong dong nhat.
+    """
+    if not files:
+        raise RuntimeError("Khong co file de ghep")
+    if len(files) == 1:
+        shutil.copyfile(files[0], out_path)
+        return
+    if fmt == "wav":
+        concat_wavs(files, out_path)
+        return
+    workdir = os.path.dirname(os.path.abspath(out_path)) or "."
+    list_path = os.path.join(workdir, "_merge_%d.txt" % os.getpid())
+    with open(list_path, "w", encoding="utf-8") as f:
+        for fp in files:
+            f.write("file '%s'\n" % os.path.abspath(fp).replace("'", r"'\''"))
+    codec = {
+        "mp3": ["-codec:a", "libmp3lame", "-qscale:a", "3"],
+        "ogg": ["-codec:a", "libvorbis", "-qscale:a", "4"],
+        "opus": ["-codec:a", "libopus", "-b:a", "48k"],
+        "m4a": ["-codec:a", "aac", "-b:a", "128k"],
+    }.get(fmt, ["-codec:a", "libmp3lame", "-qscale:a", "3"])
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+             *codec, out_path],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    finally:
+        try:
+            os.remove(list_path)
+        except OSError:
+            pass
+
+
 def build_m4b(wav_files, titles, out_path, title):
     """Gop nhieu WAV thanh 1 file .m4b co chapter marks."""
     # 1. Tao FFMETADATA voi moc chuong.
@@ -248,7 +287,10 @@ def main():
     ap.add_argument("--job", default=None, help="File job.json chua option")
     ap.add_argument("--title", default=None, help="Ten truyen")
     ap.add_argument("--format", default=None, choices=["mp3", "wav", "m4b", "ogg", "opus", "m4a"])
-    ap.add_argument("--package", default=None, choices=["auto", "zip", "single", "files"])
+    ap.add_argument("--package", default=None,
+                    choices=["auto", "zip", "single", "files", "merge"])
+    ap.add_argument("--merge-name", default=None,
+                    help="Ten file goc khi package=merge (mac dinh = slug tieu de)")
     ap.add_argument("--batch-size", type=int,
                     default=int(os.environ.get("TTS_BATCH_SIZE", "0") or "0"),
                     help="Lam ca bo: chia thanh nhieu zip, moi zip toi da N chuong (0 = 1 zip)")
@@ -392,12 +434,26 @@ def main():
         sys.exit(0)
 
     # ---- Da xong toan bo: dong goi ket qua ----
+    merge_name = args.merge_name or title_slug
     final_artifacts = []
     if fmt == "m4b":
         titles = [entry[1] for entry in chapter_entries]
-        out_path = os.path.join(args.out_dir, title_slug + ".m4b")
+        out_path = os.path.join(args.out_dir, merge_name + ".m4b")
         print("Dang gop %d chuong thanh m4b..." % len(chapter_files), flush=True)
         build_m4b(chapter_files, titles, out_path, title)
+        final_artifacts.append(out_path)
+    elif package == "merge":
+        # GHEP tat ca chuong cua batch thanh 1 file audio lien tuc.
+        out_path = os.path.join(args.out_dir, merge_name + "." + fmt)
+        print("Dang ghep %d chuong thanh 1 file: %s"
+              % (len(chapter_files), os.path.basename(out_path)), flush=True)
+        concat_audio(chapter_files, out_path, fmt)
+        for fp in chapter_files:
+            for extra in (fp, fp + ".sha256"):
+                try:
+                    os.remove(extra)
+                except OSError:
+                    pass
         final_artifacts.append(out_path)
     else:
         multiple = len(chapter_files) > 1

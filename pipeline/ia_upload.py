@@ -263,6 +263,60 @@ def item_exists(identifier):
     return bool(item_metadata(identifier).get("files"))
 
 
+# --------------------------------------------------------------- upload dir
+
+# Cac duoi file audio se duoc upload truc tiep (khong nen zip).
+AUDIO_EXTS = {".mp3", ".wav", ".m4b", ".m4a", ".ogg", ".opus", ".flac", ".aac"}
+_SKIP_UPLOAD_NAMES = {"summary.json", "manifest.json", "cleaning_report.json"}
+
+
+def _iter_upload_files(directory):
+    """Liet ke cac file can upload trong thu muc (da sap xep theo ten)."""
+    out = []
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            continue
+        if name in _SKIP_UPLOAD_NAMES or name.endswith(".sha256"):
+            continue
+        out.append((name, path))
+    return out
+
+
+def upload_directory(identifier, directory, metadata=None, make_bucket=False,
+                     access=None, secret=None, skip_existing=True):
+    """Upload TUNG file trong thu muc len item (khong dong goi zip).
+
+    - Sap xep theo ten -> giu dung thu tu chuong tren archive.org.
+    - skip_existing=True: bo qua file da co tren item (idempotency khi chay lai).
+    - metadata + make_bucket chi ap dung cho file THUC SU upload dau tien
+      (luc tao item), cac file sau chi PUT them.
+    """
+    files = _iter_upload_files(directory)
+    if not files:
+        raise RuntimeError("Khong co file nao de upload trong %s" % directory)
+    existing = set(item_file_names(identifier)) if skip_existing else set()
+    results = []
+    first_pending = True
+    for name, path in files:
+        if skip_existing and name in existing:
+            print("[IA] Bo qua (da co): %s" % name, flush=True)
+            results.append({"name": name, "skipped": True})
+            continue
+        res = upload_file(
+            identifier=identifier,
+            local_path=path,
+            remote_name=name,
+            metadata=metadata if (first_pending and make_bucket) else None,
+            make_bucket=make_bucket if first_pending else False,
+            access=access,
+            secret=secret,
+        )
+        results.append(res)
+        first_pending = False
+    return results
+
+
 # --------------------------------------------------------------- CLI
 
 def _load_json(path):
@@ -292,6 +346,35 @@ def cmd_upload(args):
         make_bucket=args.make_bucket,
     )
     print(json.dumps(result, ensure_ascii=False))
+
+
+def cmd_upload_dir(args):
+    metadata = None
+    if args.make_bucket:
+        subjects = [s.strip() for s in (args.subject or "").split(",") if s.strip()]
+        metadata = default_metadata(
+            title=args.title,
+            creator=args.creator,
+            language=args.language,
+            description=args.description,
+            collection=args.collection,
+            subjects=subjects or None,
+        )
+    results = upload_directory(
+        identifier=args.identifier,
+        directory=args.dir,
+        metadata=metadata,
+        make_bucket=args.make_bucket,
+    )
+    uploaded = [r for r in results if not r.get("skipped")]
+    skipped = [r for r in results if r.get("skipped")]
+    print(json.dumps({
+        "identifier": args.identifier,
+        "details_url": item_details_url(args.identifier),
+        "uploaded": len(uploaded),
+        "skipped": len(skipped),
+        "total": len(results),
+    }, ensure_ascii=False))
 
 
 def cmd_finalize(args):
@@ -359,6 +442,20 @@ def main():
     up.add_argument("--subject", default=None, help="Danh sach chu de, ngan cach dau phay")
     up.add_argument("--collection", default=None)
     up.set_defaults(func=cmd_upload)
+
+    ud = sub.add_parser("upload-dir",
+                        help="Upload TUNG file audio trong thu muc (khong zip)")
+    ud.add_argument("--identifier", required=True)
+    ud.add_argument("--dir", required=True)
+    ud.add_argument("--make-bucket", action="store_true",
+                    help="Tao item + gan metadata (lan dau)")
+    ud.add_argument("--title", default=None)
+    ud.add_argument("--creator", default=None)
+    ud.add_argument("--language", default=None)
+    ud.add_argument("--description", default=None)
+    ud.add_argument("--subject", default=None, help="Chu de, ngan cach dau phay")
+    ud.add_argument("--collection", default=None)
+    ud.set_defaults(func=cmd_upload_dir)
 
     fin = sub.add_parser("finalize", help="Danh dau item da hoan tat")
     fin.add_argument("--identifier", required=True)
