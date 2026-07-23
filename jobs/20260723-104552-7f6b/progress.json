@@ -6,7 +6,7 @@
   "requested_start": 101,
   "final_chapter": 187,
   "total_book_chapters": 187,
-  "next_chapter": 181,
+  "next_chapter": 188,
   "batch_size": 20,
   "completed_batches": [
     {
@@ -28,9 +28,14 @@
       "start": 161,
       "end": 180,
       "asset": "chuong_161-180"
+    },
+    {
+      "start": 181,
+      "end": 187,
+      "asset": "chuong_181-187"
     }
   ],
-  "status": "processing",
+  "status": "complete",
   "ia_identifier": "tien-lo-tranh-phong-20260723-104552-7f6b",
   "ia_item_url": "https://archive.org/details/tien-lo-tranh-phong-20260723-104552-7f6b",
   "language": "vie",
