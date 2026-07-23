@@ -1,8 +1,17 @@
 {
-  "offset": 195557087,
+  "offset": 195557088,
   "sessions": {
     "6412935043": {
-      "step": "await_file"
+      "step": "await_title",
+      "filename": "Tien Lo Tranh Phong - Duyen Phan.mobi",
+      "input_path": "bot/state/uploads/6412935043/Tien Lo Tranh Phong - Duyen Phan.mobi",
+      "title": "Tien Lo Tranh Phong - Duyen Phan",
+      "length_scale": "1.0",
+      "format": "mp3",
+      "install_calibre": "true",
+      "start": "1",
+      "limit": "0",
+      "batch_size": "0"
     }
   }
 }
