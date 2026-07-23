@@ -1,8 +1,0 @@
-{
-  "title": "Tạo Hóa Chi Vương",
-  "format": "wav",
-  "length_scale": "1.0",
-  "start": "1",
-  "limit": "1000",
-  "continuous_batch_size": "10"
-}
