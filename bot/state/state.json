@@ -1,12 +1,12 @@
 {
-  "offset": 195557084,
+  "offset": 195557085,
   "sessions": {
     "6412935043": {
-      "step": "await_speed",
+      "step": "await_format",
       "filename": "--Tạo Hóa Chi Vương full.epub",
       "input_path": "bot/state/uploads/6412935043/--Tạo Hóa Chi Vương full.epub",
       "title": "Tạo Hóa Chi Vương",
-      "length_scale": "1.0",
+      "length_scale": "1.1",
       "format": "mp3",
       "install_calibre": "false",
       "start": "1001",
