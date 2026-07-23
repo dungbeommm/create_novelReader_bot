@@ -1,4 +1,8 @@
 {
-  "offset": 195557098,
-  "sessions": {}
+  "offset": 195557099,
+  "sessions": {
+    "6412935043": {
+      "step": "await_file"
+    }
+  }
 }
