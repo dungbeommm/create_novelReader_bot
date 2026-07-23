@@ -1,22 +1,4 @@
 {
   "offset": 195557086,
-  "sessions": {
-    "6412935043": {
-      "step": "waiting_release",
-      "filename": "--Tạo Hóa Chi Vương full.epub",
-      "title": "Tạo Hóa Chi Vương",
-      "length_scale": "1.1",
-      "format": "mp3",
-      "install_calibre": "false",
-      "start": "1001",
-      "limit": "3",
-      "batch_size": "0",
-      "chapters_total": 4100,
-      "chat_id": 6412935043,
-      "job_id": "20260723-044659-b533",
-      "ia_identifier": "tao-hoa-chi-vuong-20260723-044659-b533",
-      "ia_item_url": "https://archive.org/details/tao-hoa-chi-vuong-20260723-044659-b533",
-      "started_at": "2026-07-23T04:47:02.783614Z"
-    }
-  }
+  "sessions": {}
 }
