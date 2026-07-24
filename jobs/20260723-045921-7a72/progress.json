@@ -6,7 +6,7 @@
   "requested_start": 1,
   "final_chapter": 1802,
   "total_book_chapters": 1802,
-  "next_chapter": 361,
+  "next_chapter": 381,
   "batch_size": 20,
   "completed_batches": [
     {
@@ -98,6 +98,11 @@
       "start": 341,
       "end": 360,
       "asset": "chuong_341-360"
+    },
+    {
+      "start": 361,
+      "end": 380,
+      "asset": "chuong_361-380"
     }
   ],
   "status": "processing",
