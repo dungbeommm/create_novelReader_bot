@@ -6,7 +6,7 @@
   "requested_start": 1,
   "final_chapter": 1802,
   "total_book_chapters": 1802,
-  "next_chapter": 1801,
+  "next_chapter": 1803,
   "batch_size": 20,
   "completed_batches": [
     {
@@ -458,9 +458,14 @@
       "start": 1781,
       "end": 1800,
       "asset": "chuong_1781-1800"
+    },
+    {
+      "start": 1801,
+      "end": 1802,
+      "asset": "chuong_1801-1802"
     }
   ],
-  "status": "processing",
+  "status": "complete",
   "ia_identifier": "tien-lo-tranh-phong-20260723-045921-7a72",
   "ia_item_url": "https://archive.org/details/tien-lo-tranh-phong-20260723-045921-7a72",
   "language": "vie",
