@@ -1,0 +1,8 @@
+# Persistent deployment override; avoids host bind-mount ownership for models.
+# docker compose -f compose.yaml -f compose.github.yaml up --build -d tts bot
+services:
+  bot:
+    volumes:
+      - translation-models:/app/models/translation
+volumes:
+  translation-models:

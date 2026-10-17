@@ -1,0 +1,68 @@
+name: Telegram bot - bounded hosted session
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Session minutes (1-300); not a 24/7 host'
+        default: '45'
+        required: true
+        type: string
+  schedule:
+    - cron: '17 * * * *'
+permissions:
+  contents: write
+concurrency:
+  group: novel-telegram-single-instance
+  cancel-in-progress: false
+jobs:
+  session:
+    if: github.event_name == 'workflow_dispatch' || vars.ENABLE_HOSTED_SCHEDULE == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CHECKPOINT_KEY: ${{ secrets.CHECKPOINT_KEY }}
+      GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+      GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+      GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+      BOT_DATA: ${{ github.workspace }}/data/telegram
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            telegram/requirements.txt
+      - name: Require a private repository and secrets
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request
+          for name in ('TELEGRAM_BOT_TOKEN', 'ALLOWED_USER_IDS', 'CHECKPOINT_KEY'):
+              if not os.environ.get(name): raise SystemExit('Missing secret: ' + name)
+          req = urllib.request.Request('https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY'], headers={'Authorization': 'Bearer ' + os.environ['GITHUB_TOKEN']})
+          with urllib.request.urlopen(req, timeout=30) as r:
+              if not json.load(r)['private']: raise SystemExit('Hosted sessions require a PRIVATE repository.')
+          PY
+      - name: Install runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg espeak-ng libgomp1
+          pip install -r telegram/requirements.txt
+      - name: Download translation model
+        run: python scripts/download_model.py --model HachimiMT-60-QT
+      - name: Check bundled voice
+        run: |
+          test -s models/voices/ngochuyennew.onnx
+          test -s models/voices/ngochuyennew.onnx.json
+      - name: Run finite bot session and save encrypted state
+        env:
+          SESSION_MINUTES: ${{ inputs.minutes || '45' }}
+        run: python scripts/run_github.py --minutes "$SESSION_MINUTES"
