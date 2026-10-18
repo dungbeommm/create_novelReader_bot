@@ -107,8 +107,7 @@ def push_state_to_branch():
         log.info("Đang sao lưu trạng thái bot (queue.sqlite3) lên git...")
         subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=False)
         subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=False)
-        # Sử dụng git add data/telegram
-        subprocess.run(["git", "add", "-f", "data/telegram"], check=False)
+        subprocess.run(["git", "add", "-f", "data/telegram/queue.sqlite3"], check=False)
         diff = subprocess.run(["git", "diff", "--staged", "--quiet"], check=False)
         if diff.returncode != 0:
             subprocess.run(["git", "commit", "-m", "chore: persist bot state before handover [skip ci]"], check=False)
@@ -134,7 +133,6 @@ def main():
 
     try:
         while True:
-            # Kiểm tra bot còn sống không
             ret = bot_proc.poll()
             if ret is not None:
                 log.error("Tiến trình bot Telegram đã dừng đột ngột với mã thoát: %d", ret)
@@ -145,11 +143,9 @@ def main():
             elapsed = time.time() - start_time
             remaining = MAX_RUN_SECONDS - elapsed
 
-            # Ghi log tiến trình định kỳ mỗi 30 phút
             if int(elapsed) % 1800 < CHECK_INTERVAL_SECONDS:
                 log.info("Thời gian đã chạy: %d phút | Còn lại an toàn: %d phút", int(elapsed // 60), max(0, int(remaining // 60)))
 
-            # Kiểm tra ngưỡng bàn giao
             if elapsed >= MAX_RUN_SECONDS:
                 active = is_job_active()
                 if active and elapsed < HARD_MAX_SECONDS:
@@ -159,18 +155,14 @@ def main():
 
                 log.info(">>> ĐẠT NGƯỠNG AN TOÀN (%.1f GIỜ). TIẾN HÀNH BÀN GIAO SANG RUNNER TIẾP THEO...", elapsed / 3600)
 
-                # 1. Kích hoạt workflow tiếp theo trên GitHub
                 if not triggered_next:
                     triggered_next = trigger_next_workflow()
 
-                # 2. Lưu trạng thái nếu có thể
                 push_state_to_branch()
 
-                # 3. Đợi vài chục giây để runner mới khởi động
                 log.info("Đang đợi %d giây để runner mới sẵn sàng nhận lệnh Telegram...", HANDOVER_WAIT_SECONDS)
                 time.sleep(HANDOVER_WAIT_SECONDS)
 
-                # 4. Tắt bot cũ nhẹ nhàng
                 log.info("Đang dừng bot cũ để bàn giao trọn vẹn...")
                 bot_proc.terminate()
                 try:

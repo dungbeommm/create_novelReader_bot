@@ -6,11 +6,10 @@ cd /d "%~dp0"
 set "PY_CMD=python"
 if exist ".venv\Scripts\python.exe" set "PY_CMD=.venv\Scripts\python.exe"
 
-for %%D in (data\logs models\voices) do if not exist "%%D" mkdir "%%D"
+for %%D in (models\voices data\logs) do if not exist "%%D" mkdir "%%D"
 
 echo ====================================================
-echo      Đang khởi động TTS Service (Ngọc Huyền)
-echo      Địa chỉ: http://127.0.0.1:8010
+echo   Đang khởi động Piper TTS Server (Cổng 8010)...
 echo ====================================================
 echo.
 

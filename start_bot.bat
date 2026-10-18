@@ -26,9 +26,6 @@ for %%D in (data\telegram data\logs output_text output_audio models\translation 
 echo ====================================================
 echo        Đang khởi động Telegram Bot...
 echo ====================================================
-echo Lưu ý: Nếu dùng chức năng tạo audio (mặc định), hãy chạy
-echo thêm start_tts.bat ở một cửa sổ khác để tạo audio.
-echo ====================================================
 echo.
 
 "%PY_CMD%" telegram/bot.py

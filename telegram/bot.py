@@ -18,10 +18,13 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from state import State
-
 ROOT = Path(__file__).resolve().parents[1]
 BOT_DIR = Path(__file__).resolve().parent
+for p in (str(BOT_DIR), str(ROOT)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from state import State
 
 # Tự động nạp cấu hình từ .env nếu có
 for env_file in (ROOT / '.env', BOT_DIR / '.env'):
@@ -54,7 +57,7 @@ DEFAULT_SETTINGS = {
     'honorific_mode': 'safe',     # 'safe', 'xianxia_strict', 'off'
     'pronoun_harmonizer': True,   # True, False
     'chunk_mode': 'sentence',     # 'sentence', 'paragraph'
-    'audio_speed': 1.0,           # 0.9, 1.0, 1.1, 1.25
+    'audio_speed': 1.0,           # 0.9, 1.0, 1.15, 1.25
     'start_pos': None,            # int | None
     'end_pos': None,              # int | None
     'group_size': 1,              # 1 = không gộp, >1 = gộp N chương thành 1 file
@@ -115,43 +118,39 @@ Các lệnh điều khiển:
 /xoa <mã> — Xóa dữ liệu tác vụ đã dừng
 '''
 
-async def permitted(u):
-    user = u.effective_user
-    chat = u.effective_chat
-    if not user or not chat or chat.type != 'private':
+async def permitted(u: Update):
+    if not u.effective_user or not u.effective_chat or u.effective_chat.type != 'private':
         return False
-    if user.id not in ALLOWED:
-        if u.effective_message:
-            await u.effective_message.reply_text('Bot riêng tư. Tài khoản chưa được cấp quyền.')
+    if u.effective_user.id not in ALLOWED:
+        await u.effective_message.reply_text('Bot riêng tư. Tài khoản chưa được cấp quyền.')
         return False
     return True
 
-def get_user_cfg(uid):
+def get_user_cfg(uid: int):
     saved = state.get_settings(uid)
     cfg = dict(DEFAULT_SETTINGS)
     cfg.update(saved)
     return cfg
 
-def save_user_cfg(uid, cfg):
-    return state.update_settings(uid, cfg)
+def save_user_cfg(uid: int, cfg: dict):
+    state.save_settings(uid, cfg)
 
-def get_pending(uid):
+def get_pending(uid: int):
     p = PENDING_DIR / str(uid)
     meta_file = p / 'meta.json'
-    bin_file = p / 'file.bin'
-    if meta_file.exists() and bin_file.exists():
+    if meta_file.is_file():
         try:
             return json.loads(meta_file.read_text(encoding='utf-8'))
         except Exception:
-            pass
+            return None
     return None
 
-def save_pending(uid, meta):
+def save_pending(uid: int, meta: dict):
     p = PENDING_DIR / str(uid)
     p.mkdir(parents=True, exist_ok=True)
     (p / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
 
-def clear_pending(uid):
+def clear_pending(uid: int):
     p = PENDING_DIR / str(uid)
     shutil.rmtree(p, ignore_errors=True)
 
@@ -219,12 +218,8 @@ def build_main_menu(uid, meta=None):
 
     kb = [
         [InlineKeyboardButton(f"🔄 Chế độ: {MODE_NAMES.get(mode, mode).split()[1]}", callback_data="menu:mode")],
-        [
-            InlineKeyboardButton(scope_btn, callback_data="menu:scope"),
-        ],
-        [
-            InlineKeyboardButton(f"📦 Gộp audio: {group_str}", callback_data="menu:group"),
-        ],
+        [InlineKeyboardButton(scope_btn, callback_data="menu:scope")],
+        [InlineKeyboardButton(f"📦 Gộp audio: {group_str}", callback_data="menu:group")],
         [
             InlineKeyboardButton(f"🤖 Model: {engine.replace('HachimiMT-','H-').replace('MoxhiMT-','M-')}", callback_data="menu:engine"),
             InlineKeyboardButton(f"⚡ Mức độ: Beam {beam}", callback_data="menu:beam"),
@@ -274,9 +269,7 @@ def build_scope_menu(cfg):
             InlineKeyboardButton("50 chương đầu", callback_data="set:scope:1-50"),
             InlineKeyboardButton("100 chương đầu", callback_data="set:scope:1-100"),
         ],
-        [
-            InlineKeyboardButton("✏️ Tự nhập dải chương (VD: 1-50 hoặc 10)", callback_data="ask:scope"),
-        ],
+        [InlineKeyboardButton("✏️ Tự nhập dải chương (VD: 1-50 hoặc 10)", callback_data="ask:scope")],
         [InlineKeyboardButton("🔙 Quay lại", callback_data="menu:main")],
     ]
     return text, InlineKeyboardMarkup(kb)
@@ -298,12 +291,8 @@ def build_group_menu(cfg):
             InlineKeyboardButton(f"{'✅ ' if cur_size==10 else ''}Gộp 10 chương / file", callback_data="set:group:10"),
             InlineKeyboardButton(f"{'✅ ' if cur_size==20 else ''}Gộp 20 chương / file", callback_data="set:group:20"),
         ],
-        [
-            InlineKeyboardButton(f"{'✅ ' if cur_size==50 else ''}Gộp 50 chương / file", callback_data="set:group:50"),
-        ],
-        [
-            InlineKeyboardButton("✏️ Tự nhập số chương gộp", callback_data="ask:group"),
-        ],
+        [InlineKeyboardButton(f"{'✅ ' if cur_size==50 else ''}Gộp 50 chương / file", callback_data="set:group:50")],
+        [InlineKeyboardButton("✏️ Tự nhập số chương gộp", callback_data="ask:group")],
         [InlineKeyboardButton("🔙 Quay lại", callback_data="menu:main")],
     ]
     return text, InlineKeyboardMarkup(kb)
@@ -376,7 +365,7 @@ def build_speed_menu(cfg):
     speeds = [
         (0.9, '0.9x (Chậm rãi, truyền cảm)'),
         (1.0, '1.0x (Chuẩn bình thường) ⭐'),
-        (1.1, '1.1x (Hơi nhanh)'),
+        (1.15, '1.15x (Hơi nhanh)'),
         (1.25, '1.25x (Nhanh)'),
     ]
     kb = []
@@ -461,95 +450,70 @@ async def document(u: Update, c: ContextTypes.DEFAULT_TYPE):
             'file_size_mb': size_mb,
             'chat_id': u.effective_chat.id,
             'mode': cfg.get('mode', 'full'),
-            'config': cfg,
+            'config': cfg
         }
         save_pending(uid, meta)
         text, markup = build_main_menu(uid, meta)
         await u.message.reply_text(text, reply_markup=markup, parse_mode='Markdown')
     except Exception:
         log.exception('Receive failed')
-        await u.message.reply_text('Chưa nhận được truyện: có thể Telegram lỗi hoặc bộ nhớ đầy. Thử lại sau.')
+        await u.message.reply_text('Chưa nhận được truyện: có thể hàng đợi đầy hoặc Telegram lỗi mạng. Thử lại sau.')
 
 async def on_text_message(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if not await permitted(u): return
     uid = u.effective_user.id
     if uid not in AWAITING_INPUT:
         return
-
-    mode = AWAITING_INPUT.pop(uid)
-    raw = (u.message.text or '').strip()
+    field = AWAITING_INPUT.pop(uid)
+    text = u.message.text.strip()
     meta = get_pending(uid)
     cfg = meta['config'] if meta else get_user_cfg(uid)
 
-    if mode == 'scope':
-        low = raw.lower()
-        if low in ('0', 'all', 'tat ca', 'toan bo', '*'):
+    if field == 'scope':
+        if text.lower() in ('all', 'toan bo', 'tất cả', 'full'):
             cfg['start_pos'] = None
             cfg['end_pos'] = None
-            desc = "Toàn bộ truyện"
-        elif '-' in low:
-            parts = low.split('-', 1)
-            s_val = int(parts[0].strip()) if parts[0].strip().isdigit() else None
-            e_val = int(parts[1].strip()) if parts[1].strip().isdigit() else None
+            resp = "Đã chọn dịch toàn bộ truyện."
+        elif '-' in text:
+            parts = text.split('-', 1)
+            p1 = parts[0].strip()
+            p2 = parts[1].strip()
+            s_val = int(p1) if p1.isdigit() else 1
+            e_val = int(p2) if p2.isdigit() else None
             cfg['start_pos'] = s_val
             cfg['end_pos'] = e_val
-            desc = format_scope(s_val, e_val)
-        elif low.isdigit():
-            val = int(low)
+            resp = f"Đã đặt dải chương: {format_scope(s_val, e_val)}"
+        elif text.isdigit():
+            val = int(text)
             cfg['start_pos'] = 1
             cfg['end_pos'] = val
-            desc = f"Chương 1 - {val}"
+            resp = f"Đã đặt dịch {val} chương đầu."
         else:
-            AWAITING_INPUT[uid] = 'scope'
-            await u.message.reply_text(
-                "⚠️ Định dạng không đúng.\n"
-                "Hãy nhập ví dụ:\n"
-                "• `1-50` (Chương 1 đến 50)\n"
-                "• `20` (20 chương đầu)\n"
-                "• `5-` (Từ chương 5 đến hết)\n"
-                "• `all` (Toàn bộ truyện)",
-                parse_mode='Markdown'
-            )
+            await u.message.reply_text("Định dạng không hợp lệ. Ví dụ: `1-50`, `20` hoặc `all`.")
             return
 
-        if meta:
-            save_pending(uid, meta)
-        else:
-            save_user_cfg(uid, cfg)
-
-        await u.message.reply_text(f"✅ Đã chọn dải chương dịch: *{desc}*", parse_mode='Markdown')
-        text, markup = build_main_menu(uid, meta)
-        await u.message.reply_text(text, reply_markup=markup, parse_mode='Markdown')
-
-    elif mode == 'group':
-        if not raw.isdigit():
-            AWAITING_INPUT[uid] = 'group'
-            await u.message.reply_text(
-                "⚠️ Vui lòng nhập một số nguyên dương.\n"
-                "Ví dụ: `10` để gộp 10 chương thành 1 file MP3, hoặc `1` để không gộp.",
-                parse_mode='Markdown'
-            )
+    elif field == 'group':
+        if not text.isdigit() or int(text) < 1:
+            await u.message.reply_text("Hãy nhập một số nguyên dương (ví dụ: `5` hoặc `15`).")
             return
-
-        val = max(1, int(raw))
+        val = int(text)
         cfg['group_size'] = val
-        if meta:
-            save_pending(uid, meta)
-        else:
-            save_user_cfg(uid, cfg)
+        resp = f"Đã đặt gộp: {format_group(val)}"
 
-        desc = format_group(val)
-        await u.message.reply_text(f"✅ Đã đặt gộp audio: *{desc}*", parse_mode='Markdown')
-        text, markup = build_main_menu(uid, meta)
-        await u.message.reply_text(text, reply_markup=markup, parse_mode='Markdown')
+    if meta:
+        save_pending(uid, meta)
+    else:
+        save_user_cfg(uid, cfg)
+
+    menu_text, markup = build_main_menu(uid, meta)
+    await u.message.reply_text(f"✅ {resp}\n\n" + menu_text, reply_markup=markup, parse_mode='Markdown')
 
 async def on_callback(u: Update, c: ContextTypes.DEFAULT_TYPE):
     q = u.callback_query
     await q.answer()
-    if not await permitted(u): return
-
+    data = q.data
     uid = u.effective_user.id
-    data = q.data or ''
+
     AWAITING_INPUT.pop(uid, None)
     meta = get_pending(uid)
     cfg = meta['config'] if meta else get_user_cfg(uid)
@@ -751,6 +715,23 @@ async def status(u: Update, c: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{row['id']}: {row['status']}{detail}")
     await u.message.reply_text('\n'.join(lines) or 'Chưa có tác vụ.')
 
+def cleanup_job_data(target_jid: str | None = None):
+    """Tự động xóa sạch toàn bộ thư mục dữ liệu, file tạm và cache của tác vụ đã xong hoặc tác vụ trước đó."""
+    if target_jid:
+        target_folder = DATA / target_jid
+        if target_folder.exists():
+            shutil.rmtree(target_folder, ignore_errors=True)
+            log.info("Đã xóa sạch cache và data của tác vụ %s", target_jid)
+
+    # Quét dọn các thư mục dữ liệu truyện cũ đã hoàn tất hoặc đã bị xóa
+    if DATA.exists():
+        for item in DATA.iterdir():
+            if item.is_dir() and len(item.name) == 16:
+                st = state.get(item.name)
+                if st is None or st.get('status') in ('done', 'deleted'):
+                    shutil.rmtree(item, ignore_errors=True)
+                    log.info("Đã tự động dọn dẹp thư mục cache truyện cũ: %s", item.name)
+
 async def action(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if not await permitted(u): return
     row = state.get(c.args[0], u.effective_user.id) if len(c.args) == 1 else None
@@ -782,7 +763,7 @@ async def action(u: Update, c: ContextTypes.DEFAULT_TYPE):
         if row['status'] in ('queued', 'running', 'delivering') or c.application.bot_data.get('active') == jid:
             await u.message.reply_text('Hãy /cancel rồi đợi tác vụ dừng trước khi xóa.')
             return
-        shutil.rmtree(DATA / jid, ignore_errors=True)
+        cleanup_job_data(jid)
         state.set(jid, 'deleted')
         await u.message.reply_text('Đã xóa dữ liệu và checkpoint trên máy chủ.')
 
@@ -809,12 +790,19 @@ async def deliver(app, row):
         await asyncio.sleep(1.1)
     if state.get(row['id'])['status'] != 'cancelled':
         state.set(row['id'], 'done')
+        cleanup_job_data(row['id'])
         with contextlib.suppress(Exception):
-            await app.bot.send_message(row['chat'], f"Hoàn tất {row['id']}. Dọn dữ liệu bằng /xoa {row['id']}.")
+            await app.bot.send_message(
+                row['chat'],
+                f"🎉 Hoàn tất gửi kết quả cho tác vụ `{row['id']}`!\n"
+                f"🧹 Đã tự động dọn sạch toàn bộ cache và dữ liệu tạm của truyện trên máy chủ.",
+                parse_mode='Markdown'
+            )
 
 async def worker(app):
     global process
     state.recover()
+    cleanup_job_data()
     while True:
         row = state.next()
         if not row:
@@ -836,7 +824,7 @@ async def worker(app):
                     current = state.get(jid)['status']
                     if current not in ('running',) or asyncio.get_running_loop().time() - began > 86400:
                         if current == 'running':
-                            state.set(jid, 'failed', 'Timeout 24 giờ; có thể /retry.')
+                            state.set(jid, 'failed', 'Quá thời gian 24h.')
                         process.terminate()
                         try:
                             await asyncio.wait_for(process.wait(), 10)
@@ -851,7 +839,19 @@ async def worker(app):
                 if state.get(jid)['status'] != 'running':
                     continue
                 if process.returncode:
-                    raise RuntimeError('Xử lý lỗi; xem runner.log trên máy chủ.')
+                    log_tail = ""
+                    log_file = folder / 'runner.log'
+                    if log_file.exists():
+                        try:
+                            lines = log_file.read_text(encoding='utf-8', errors='replace').strip().splitlines()
+                            log_tail = "\n".join(lines[-30:])
+                        except Exception:
+                            pass
+                    log.error("Runner failed with exit code %s for job %s:\n%s", process.returncode, jid, log_tail)
+                    err_summary = f"Runner gặp sự cố (exit code {process.returncode})."
+                    if log_tail:
+                        err_summary += f"\nChi tiết:\n{log_tail}"
+                    raise RuntimeError(err_summary)
             state.set(jid, 'delivering')
             await deliver(app, row)
         except asyncio.CancelledError:
@@ -863,15 +863,27 @@ async def worker(app):
                     process.kill()
                     await process.wait()
             raise
-        except Exception:
+        except Exception as exc:
             log.exception('Job %s failed', jid)
             if state.get(jid)['status'] not in ('cancelled', 'queued'):
-                state.set(jid, 'failed', 'Xử lý/gửi kết quả lỗi; xem runner.log.')
-                with contextlib.suppress(Exception):
+                err_text = str(exc)
+                state.set(jid, 'failed', err_text[:500])
+                msg = f"❌ Tác vụ `{jid}` thất bại.\n\n"
+                tail = err_text[-1500:] if len(err_text) > 1500 else err_text
+                msg += f"```\n{tail}\n```\n"
+                msg += f"Dùng /retry {jid} để thử lại."
+                try:
                     await app.bot.send_message(
                         row['chat'],
-                        f'Tác vụ {jid} lỗi. Dùng /retry {jid} để thử lại. Chi tiết nằm trong runner.log.'
+                        msg,
+                        parse_mode='Markdown'
                     )
+                except Exception:
+                    with contextlib.suppress(Exception):
+                        await app.bot.send_message(
+                            row['chat'],
+                            f"❌ Tác vụ {jid} thất bại:\n{tail}\n\nDùng /retry {jid} để thử lại."
+                        )
         finally:
             process = None
             app.bot_data['active'] = None

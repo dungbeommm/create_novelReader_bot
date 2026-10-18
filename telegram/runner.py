@@ -198,6 +198,10 @@ def run(folder: Path):
     progress(folder, 'xử lý xong', done=total_target, total=total_target)
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    if len(sys.argv) < 2:
+        print("Usage: runner.py <folder>", file=sys.stderr)
+        sys.exit(1)
     try:
         run(Path(sys.argv[1]).resolve())
     except Exception:
