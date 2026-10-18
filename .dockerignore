@@ -9,7 +9,3 @@ data
 output_text
 output_audio
 models/translation
-gdrive-secrets*.json
-client_secret*.json
-credentials*.json
-*.enc

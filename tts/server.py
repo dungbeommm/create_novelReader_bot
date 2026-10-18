@@ -21,6 +21,7 @@ CONFIG = Path(os.getenv("TTS_CONFIG", str(VOICE_DIR / "ngochuyennew.onnx.json"))
 
 class Input(BaseModel):
     text: str = Field(min_length=1, max_length=250000)
+    speed: float = Field(default=1.0, ge=0.4, le=2.5)
 
 @lru_cache(maxsize=1)
 def voice():
@@ -37,8 +38,9 @@ def synth(payload: Input):
         root = Path(temp.name)
         wav = root / 'audio.wav'
         mp3 = root / 'audio.mp3'
+        length_scale = 1.0 / max(0.4, min(2.5, payload.speed))
         with lock:
-            synth_chapter(voice(), payload.text, str(wav), str(root), 1500, length_scale=1.0)
+            synth_chapter(voice(), payload.text, str(wav), str(root), 1500, length_scale=length_scale)
         subprocess.run(['ffmpeg','-v','error','-y','-i',str(wav),'-b:a','96k',str(mp3)],
                        check=True, timeout=1800)
         wav.unlink()

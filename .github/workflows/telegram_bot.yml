@@ -1,0 +1,84 @@
+name: Continuous Telegram Bot
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Chạy dự phòng mỗi 5 tiếng để đảm bảo bot không bao giờ bị gián đoạn
+    - cron: '0 */5 * * *'
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+
+concurrency:
+  group: continuous-telegram-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  run-bot:
+    name: Run Telegram Bot 24/7
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # Giới hạn tối đa của GitHub Actions (6 giờ)
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
+      GH_PAT: ${{ secrets.GH_PAT }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      WORKFLOW_FILE: telegram_bot.yml
+      PYTHONUNBUFFERED: "1"
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies (ffmpeg & espeak-ng)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg espeak-ng
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Cache AI Models
+        id: cache-models
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/translation
+            models/voices
+          key: novel-models-v2-${{ hashFiles('scripts/setup_models.py') }}
+          restore-keys: |
+            novel-models-v2-
+
+      - name: Prepare AI models (Hachimi & Piper Voice)
+        run: |
+          python scripts/setup_models.py --model HachimiMT-60-QT --voice ngochuyennew
+
+      - name: Restore Bot State Cache
+        uses: actions/cache@v4
+        with:
+          path: data/telegram
+          key: bot-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            bot-state-
+
+      - name: Run Telegram Bot with Continuous Watchdog
+        run: |
+          python scripts/github_runner.py

@@ -7,7 +7,3 @@ models/
 output_text/
 output_audio/
 .venv/
-gdrive-secrets*.json
-client_secret*.json
-credentials*.json
-*.enc

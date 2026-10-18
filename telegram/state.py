@@ -15,11 +15,18 @@ class State:
         with self.connect() as c:
             c.executescript('''PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, owner INTEGER, chat INTEGER,
-                mode TEXT, status TEXT, created REAL, error TEXT DEFAULT '');
-            CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, mode TEXT);
-            CREATE TABLE IF NOT EXISTS received(owner INTEGER, message_id INTEGER, job TEXT,
-                PRIMARY KEY(owner, message_id));
+                mode TEXT, status TEXT, created REAL, error TEXT DEFAULT '', config TEXT DEFAULT '{}');
+            CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, mode TEXT, settings TEXT DEFAULT '{}');
             ''')
+            # Cập nhật bảng nếu tồn tại từ phiên bản trước
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN settings TEXT DEFAULT '{}'")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE jobs ADD COLUMN config TEXT DEFAULT '{}'")
+            except sqlite3.OperationalError:
+                pass
     @contextmanager
     def connect(self):
         c = sqlite3.connect(self.db, timeout=30)
@@ -35,30 +42,48 @@ class State:
     def mode(self, uid, value=None):
         with self.connect() as c:
             if value:
-                c.execute('INSERT OR REPLACE INTO users VALUES(?,?)', (uid, value))
+                c.execute('INSERT INTO users(id, mode) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET mode=excluded.mode', (uid, value))
             row = c.execute('SELECT mode FROM users WHERE id=?', (uid,)).fetchone()
-            return row['mode'] if row else 'full'
-    def create(self, owner, chat, mode, suffix, data, message_id=None):
+            return row['mode'] if row and row['mode'] else 'full'
+    def get_settings(self, uid):
+        with self.connect() as c:
+            row = c.execute('SELECT settings, mode FROM users WHERE id=?', (uid,)).fetchone()
+            if not row:
+                return {}
+            try:
+                s = json.loads(row['settings']) if row['settings'] else {}
+            except Exception:
+                s = {}
+            if 'mode' not in s and row['mode']:
+                s['mode'] = row['mode']
+            return s
+    def update_settings(self, uid, new_settings):
+        current = self.get_settings(uid)
+        current.update(new_settings)
+        mode = current.get('mode', 'full')
+        dumped = json.dumps(current, ensure_ascii=False)
+        with self.connect() as c:
+            c.execute('INSERT INTO users(id, mode, settings) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET mode=excluded.mode, settings=excluded.settings',
+                      (uid, mode, dumped))
+        return current
+    def create(self, owner, chat, mode, suffix, data, config=None):
         if mode not in ('translate', 'audio', 'full') or suffix not in ('.txt', '.epub'):
             raise ValueError('Chế độ/định dạng không hợp lệ.')
         jid = uuid.uuid4().hex[:16]
+        config = config or {}
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
-            if message_id is not None:
-                existing = c.execute('SELECT job FROM received WHERE owner=? AND message_id=?', (owner,message_id)).fetchone()
-                if existing: return existing['job']
             if c.execute("SELECT count(*) FROM jobs WHERE status IN ('queued','running','delivering')").fetchone()[0] >= 10:
                 raise ValueError('Hàng đợi đầy (10 truyện).')
             if c.execute("SELECT count(*) FROM jobs WHERE owner=? AND status IN ('queued','running','delivering')", (owner,)).fetchone()[0] >= 2:
                 raise ValueError('Bạn đang có 2 truyện chờ/chạy. Hãy đợi hoặc hủy bớt.')
             folder = self.root / jid
-            folder.mkdir()
+            folder.mkdir(parents=True, exist_ok=True)
             (folder / ('input' + suffix)).write_bytes(data)
-            (folder / 'request.json').write_text(json.dumps({'mode': mode, 'input': 'input' + suffix}), encoding='utf-8')
-            c.execute('INSERT INTO jobs(id,owner,chat,mode,status,created) VALUES(?,?,?,?,?,?)',
-                      (jid, owner, chat, mode, 'queued', time.time()))
-            if message_id is not None:
-                c.execute('INSERT INTO received VALUES(?,?,?)', (owner,message_id,jid))
+            req_data = {'mode': mode, 'input': 'input' + suffix, 'config': config}
+            (folder / 'request.json').write_text(json.dumps(req_data, ensure_ascii=False), encoding='utf-8')
+            c.execute('INSERT INTO jobs(id,owner,chat,mode,status,created,config) VALUES(?,?,?,?,?,?,?)',
+                      (jid, owner, chat, mode, 'queued', time.time(), json.dumps(config, ensure_ascii=False)))
         return jid
     def requeue(self, jid, owner):
         with self.connect() as c:

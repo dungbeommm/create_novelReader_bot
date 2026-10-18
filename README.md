@@ -2,15 +2,6 @@
 
 Mã nguồn được chia ngang hàng theo chức năng, không còn thư mục `translator/` bao ngoài.
 
-## Mới: triển khai GitHub + Telegram + Drive/Releases
-
-- **24/7:** GitHub Actions triển khai lên VPS/self-hosted runner, Docker giữ bot và TTS chạy sau khi job kết thúc.
-- **GitHub-hosted:** phiên hữu hạn 1–300 phút, lịch theo giờ tùy chọn, checkpoint mã hóa để phiên sau tiếp tục; **không đảm bảo online liên tục**.
-- Kết quả ưu tiên Google Drive; chưa liên kết hoặc Drive lỗi thì tải lên **GitHub Releases** của repo private. Bot gửi link và tệp Telegram khi đủ nhỏ.
-- Có helper OAuth Drive chạy trên máy cá nhân; không gửi token qua chat. `/storage` xem trạng thái cấu hình.
-
-**Hướng dẫn từng bước, Secrets, giới hạn và khôi phục:** [docs/GITHUB_TELEGRAM_DRIVE.md](docs/GITHUB_TELEGRAM_DRIVE.md).
-
 ## Cấu trúc
 
 ```text
@@ -77,7 +68,7 @@ tool/
 └── README.md
 ```
 
-Các thư mục model/data/output có thể trống trong ZIP. Database/log chỉ sinh khi chạy. Gói ZIP bổ sung này giữ model/giọng có sẵn trong tệp bạn cung cấp; không kèm dữ liệu truyện hoặc credentials. `.gitignore` vẫn loại model, nên xem hướng dẫn mới trước khi đưa lên GitHub.
+Các thư mục model/data/output có thể trống trong ZIP. Database/log chỉ sinh khi chạy. Gói mã không kèm trọng số model hay dữ liệu cá nhân.
 
 ## Cài đặt và chạy Web
 

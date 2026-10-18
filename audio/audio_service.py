@@ -91,9 +91,26 @@ def get_voice(voice_id: str = "ngochuyennew"):
         config_path = VOICE_DIR / f"{voice_id}.onnx.json"
 
         if not model_path.is_file():
-            # Fallback về ngochuyennew nếu giọng yêu cầu chưa có
-            model_path = VOICE_DIR / "ngochuyennew.onnx"
-            config_path = VOICE_DIR / "ngochuyennew.onnx.json"
+            # Tự động tải ngochuyennew nếu chưa có trên máy hoặc môi trường GitHub Actions
+            log.info("Chưa có voice model %s, đang tự động tải về...", model_path.name)
+            VOICE_DIR.mkdir(parents=True, exist_ok=True)
+            import urllib.request
+            base_url = "https://raw.githubusercontent.com/dungbeommm/NovelReader_voices/main/voices/low/low-ngochuyennew"
+            try:
+                for fn, min_sz in (("ngochuyennew.onnx.json", 100), ("ngochuyennew.onnx", 10 * 1024 * 1024)):
+                    target = VOICE_DIR / fn
+                    if not target.is_file() or target.stat().st_size < min_sz:
+                        tmp = target.with_suffix('.tmp')
+                        req = urllib.request.Request(f"{base_url}/{fn}", headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, 'wb') as f:
+                            while True:
+                                chunk = resp.read(65536)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                        tmp.replace(target)
+            except Exception as dl_err:
+                log.error("Tự động tải voice thất bại: %s", dl_err)
 
         if not model_path.is_file():
             raise FileNotFoundError(f"Không tìm thấy model giọng TTS: {voice_id}")
