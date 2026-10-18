@@ -53,10 +53,8 @@ def run(folder: Path):
 
     if not store.book():
         chapters, enc = parse_file(request['input'], (folder / request['input']).read_bytes())
-        if not chapters or len(chapters) > 10000 or sum(len(t)+len(b) for t,b in chapters) > 2000000:
-            raise ValueError('Mỗi truyện tối đa 10.000 chương / 2 triệu ký tự. Hãy chia tập.')
-        if any(len(t)+len(b) > 200000 for t,b in chapters):
-            raise ValueError('Một chương quá 200.000 ký tự. Hãy chia nhỏ.')
+        if not chapters:
+            raise ValueError('Không tìm thấy nội dung hoặc chương nào trong file truyện.')
         store.replace(request['input'], enc, chapters)
 
     req_cfg = request.get('config') or {}
